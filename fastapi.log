@@ -1,0 +1,50 @@
+nohup: ignoring input
+INFO:     Started server process [792178]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:57020 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57020 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+/home/qixiangliu/pycode/locateanthing_colony_count/locateanthing/lib/python3.10/site-packages/transformers/models/auto/image_processing_auto.py:647: FutureWarning: The image_processor_class argument is deprecated and will be removed in v4.42. Please use `slow_image_processor_class`, or `fast_image_processor_class` instead
+  warnings.warn(
+`torch_dtype` is deprecated! Use `dtype` instead!
+flash_attn is not available for MoonViT inference; falling back to sdpa.
+Qwen2ForCausalLM has generative capabilities, as `prepare_inputs_for_generation` is explicitly defined. However, it doesn't directly inherit from `GenerationMixin`. From 👉v4.50👈 onwards, `PreTrainedModel` will NOT inherit from `GenerationMixin`, and this model will lose the ability to call `generate` and other related functions.
+  - If you're using `trust_remote_code=True`, you can get rid of this warning by loading the model with an auto class. See https://huggingface.co/docs/transformers/en/model_doc/auto#auto-classes
+  - If you are the owner of the model architecture code, please modify your model class such that it inherits from `GenerationMixin` (after `PreTrainedModel`, otherwise you'll get an exception).
+  - If you are not the owner of the model architecture class, please contact the model code owner to update it.
+magi_attention not available, falling back to sdpa
+Loading shared model from: /home/qixiangliu/pycode/locateanthing_colony_count/LocateAnything-3B
+Using device: cuda
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  1.31it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  2.24it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  2.03it/s]
+/home/qixiangliu/.cache/huggingface/modules/transformers_modules/LocateAnything_hyphen_3B/generate_utils.py:186: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.detach().clone() or sourceTensor.detach().clone().requires_grad_(True), rather than torch.tensor(sourceTensor).
+  box_avg.append(torch.tensor(out_ref, dtype=x0.dtype, device=x0.device))
+Using shared LocateAnythingWorker instance.
+
+[Stage 1] Coarse locate on original image...
+
+Statistic Info, num_tokens=2051; generate_time(s)=17.3490; tps=118.2201; forward_step=386; num_boxes=340; bps=19.5977; prefill_time=0.9855; switch_to_ar=12
+
+[Stage 1] Raw count (after NMS): 91
+[Stage 2] Density=medium (50 ≤ 91 < 150) → CLAHE + re-locate + center-distance dedup
+
+Statistic Info, num_tokens=1067; generate_time(s)=10.3174; tps=103.4174; forward_step=246; num_boxes=156; bps=15.1201; prefill_time=0.0710; switch_to_ar=19
+
+[Stage 2] After CLAHE + re-locate + dedup: 51
+[CUDA Cleanup] Allocated: 7.19 GiB, Reserved: 7.22 GiB
+INFO:     127.0.0.1:48530 - "POST /api/colony/count HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48620 - "GET / HTTP/1.1" 200 OK
+
+[Stage 1] Coarse locate on original image...
+
+Statistic Info, num_tokens=1031; generate_time(s)=9.3728; tps=109.9992; forward_step=222; num_boxes=150; bps=16.0038; prefill_time=0.0779; switch_to_ar=14
+
+[Stage 1] Raw count (after NMS): 50
+[Stage 2] Density=medium (50 ≤ 50 < 150) → CLAHE + re-locate + center-distance dedup
+
+Statistic Info, num_tokens=1061; generate_time(s)=9.7987; tps=108.2799; forward_step=235; num_boxes=155; bps=15.8185; prefill_time=0.0706; switch_to_ar=16
+
+[Stage 2] After CLAHE + re-locate + dedup: 52
+[CUDA Cleanup] Allocated: 7.19 GiB, Reserved: 7.22 GiB
+INFO:     127.0.0.1:48604 - "POST /api/colony/count HTTP/1.1" 200 OK
