@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>菌落与细胞计数分析软件 V1.0</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; }
+        
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 16px 24px; }
+        .header h1 { font-size: 24px; margin-bottom: 4px; }
+        .header p { font-size: 14px; opacity: 0.9; }
+        
+        .tabs { display: flex; background: white; border-bottom: 1px solid #e0e0e0; padding: 0 24px; }
+        .tab { padding: 12px 24px; cursor: pointer; border: none; background: none; font-size: 16px; color: #666; position: relative; }
+        .tab.active { color: #667eea; font-weight: 600; }
+        .tab.active::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: #667eea; }
+        
+        .container { max-width: 1400px; margin: 24px auto; padding: 0 24px; }
+        .tab-content { display: none; }
+        .tab-content.active { display: flex; gap: 24px; }
+        
+        .panel { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        .left-panel { flex: 1; min-width: 300px; }
+        .right-panel { flex: 2; min-width: 400px; }
+        
+        .upload-area { border: 2px dashed #ddd; border-radius: 8px; padding: 40px; text-align: center; cursor: pointer; transition: all 0.3s; }
+        .upload-area:hover { border-color: #667eea; background: #f8f9ff; }
+        .upload-area.has-file { padding: 12px; border-style: solid; border-color: #c8e6c9; background: #f1f8e9; }
+        .upload-area.has-file p { color: #2e7d32; font-size: 13px; word-break: break-all; }
+        .upload-area input { display: none; }
+        
+        .canvas-container { position: relative; border: 1px solid #e0e0e0; border-radius: 8px; overflow: auto; min-height: 400px; max-height: 70vh; background: #fafafa; }
+        .canvas-container canvas { display: block; cursor: crosshair; }
+        .canvas-container.panning canvas { cursor: grab; }
+        .canvas-container.panning:active canvas { cursor: grabbing; }
+        
+        .controls { margin-top: 16px; display: flex; gap: 12px; flex-wrap: wrap; }
+        .btn { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.2s; }
+        .btn-primary { background: #667eea; color: white; }
+        .btn-primary:hover { background: #5a6fd6; }
+        .btn-secondary { background: #e0e0e0; color: #333; }
+        .btn-secondary:hover { background: #d0d0d0; }
+        .btn-success { background: #4caf50; color: white; }
+        .btn-success:hover { background: #43a047; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .stats { display: flex; gap: 16px; margin-bottom: 16px; }
+        .stat-item { background: #f8f9ff; padding: 12px 16px; border-radius: 8px; flex: 1; }
+        .stat-label { font-size: 12px; color: #666; }
+        .stat-value { font-size: 24px; font-weight: 600; color: #333; }
+        
+        .params { margin-top: 16px; }
+        .param-group { margin-bottom: 12px; }
+        .param-group label { display: block; font-size: 13px; color: #666; margin-bottom: 4px; }
+        .param-group input[type="range"] { width: 100%; }
+        .param-value { float: right; font-weight: 500; }
+        
+        .info-box { background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 12px; margin-top: 12px; font-size: 13px; }
+        .error-box { background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 6px; padding: 12px; margin-top: 12px; font-size: 13px; color: #721c24; }
+        
+        .loading { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
+        .loading.active { display: flex; }
+        .spinner { width: 50px; height: 50px; border: 4px solid #f3f3f3; border-top: 4px solid #667eea; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        .toolbar { display: flex; gap: 8px; align-items: center; padding: 8px 0; flex-wrap: wrap; }
+        .zoom-btn { width: 32px; height: 32px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; }
+        .zoom-btn:hover { background: #f0f0f0; }
+        .zoom-level { font-size: 14px; color: #666; min-width: 50px; text-align: center; }
+        .toolbar-sep { width: 1px; height: 24px; background: #ddd; margin: 0 4px; }
+        
+        .mode-toggle { display: flex; border: 1px solid #ddd; border-radius: 6px; overflow: hidden; }
+        .mode-btn { padding: 6px 14px; border: none; background: white; cursor: pointer; font-size: 13px; color: #666; transition: all 0.2s; }
+        .mode-btn.active { background: #667eea; color: white; }
+        .mode-btn:not(:last-child) { border-right: 1px solid #ddd; }
+        
+        .image-info { font-size: 12px; color: #999; margin-top: 4px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>菌落与细胞计数分析软件 V1.0</h1>
+        <p>基于 LocateAnything 模型 | 红点=自动检测 | 绿点=手动添加 | Shift+点击删除点 | 直接点击添加点</p>
+    </div>
+    
+    <div class="tabs">
+        <button class="tab active" data-tab="colony">菌落计数</button>
+        <button class="tab" data-tab="cell">细胞计数</button>
+    </div>
+    
+    <div class="container">
+        <!-- 菌落计数 -->
+        <div id="colony-tab" class="tab-content active">
+            <div class="panel left-panel">
+                <h3>上传图片</h3>
+                <div class="upload-area" id="colony-upload">
+                    <input type="file" id="colony-file" accept="image/*">
+                    <p>点击或拖拽上传图片</p>
+                </div>
+                <div class="image-info" id="colony-image-info"></div>
+                
+                <div class="controls">
+                    <button class="btn btn-primary" id="colony-count-btn" disabled>开始计数</button>
+                    <button class="btn btn-secondary" id="colony-undo-btn" disabled>撤销</button>
+                    <button class="btn btn-secondary" id="colony-reset-btn" disabled>重置</button>
+                    <button class="btn btn-success" id="colony-export-btn" disabled>导出结果</button>
+                </div>
+                
+                <div class="params" id="colony-params">
+                    <details>
+                        <summary style="cursor:pointer;color:#666;">参数调节面板</summary>
+                        <div class="param-group">
+                            <label>稀疏阈值 <span class="param-value" id="colony-sparse-val">50</span></label>
+                            <input type="range" id="colony-sparse" min="5" max="300" value="50" step="1">
+                        </div>
+                        <div class="param-group">
+                            <label>密集阈值 <span class="param-value" id="colony-dense-val">150</span></label>
+                            <input type="range" id="colony-dense" min="20" max="500" value="150" step="1">
+                        </div>
+                        <div class="param-group">
+                            <label>NMS IoU 阈值 <span class="param-value" id="colony-nms-val">0.3</span></label>
+                            <input type="range" id="colony-nms" min="0.1" max="0.9" value="0.3" step="0.01">
+                        </div>
+                        <div class="param-group">
+                            <label>去重距离 (px) <span class="param-value" id="colony-dedup-val">3.0</span></label>
+                            <input type="range" id="colony-dedup" min="1" max="20" value="3" step="0.5">
+                        </div>
+                        <div class="param-group">
+                            <label>CLAHE 对比度限制 <span class="param-value" id="colony-clahe-val">2.0</span></label>
+                            <input type="range" id="colony-clahe" min="0.5" max="10" value="2" step="0.1">
+                        </div>
+                        <div class="param-group">
+                            <label>CLAHE 网格大小 <span class="param-value" id="colony-tile-val">8</span></label>
+                            <input type="range" id="colony-tile" min="4" max="16" value="8" step="1">
+                        </div>
+                        <div class="param-group">
+                            <label>分水岭面积因子 <span class="param-value" id="colony-ws-area-val">2.0</span></label>
+                            <input type="range" id="colony-ws-area" min="0.5" max="5" value="2" step="0.1">
+                        </div>
+                        <div class="param-group">
+                            <label>分水岭距离比 <span class="param-value" id="colony-ws-dist-val">0.3</span></label>
+                            <input type="range" id="colony-ws-dist" min="0.1" max="0.8" value="0.3" step="0.05">
+                        </div>
+                        <div class="param-group">
+                            <label>分水岭最小面积比 <span class="param-value" id="colony-ws-min-val">0.0005</span></label>
+                            <input type="range" id="colony-ws-min" min="0.0001" max="0.005" value="0.0005" step="0.0001">
+                        </div>
+                    </details>
+                </div>
+                
+                <div id="colony-info"></div>
+            </div>
+            
+            <div class="panel right-panel">
+                <div class="stats">
+                    <div class="stat-item">
+                        <div class="stat-label">当前数量</div>
+                        <div class="stat-value" id="colony-count">0</div>
+                    </div>
+                </div>
+                
+                <div class="toolbar">
+                    <button class="zoom-btn" id="colony-zoom-out" title="缩小">-</button>
+                    <span class="zoom-level" id="colony-zoom-level">100%</span>
+                    <button class="zoom-btn" id="colony-zoom-in" title="放大">+</button>
+                    <button class="zoom-btn" id="colony-zoom-fit" title="适应">&#x2922;</button>
+                    <div class="toolbar-sep"></div>
+                    <button class="zoom-btn" id="colony-pan-toggle" title="平移模式">&#x2725;</button>
+                </div>
+                
+                <div class="canvas-container" id="colony-canvas-container">
+                    <canvas id="colony-canvas"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 细胞计数 -->
+        <div id="cell-tab" class="tab-content">
+            <div class="panel left-panel">
+                <h3>上传图片</h3>
+                <div class="upload-area" id="cell-upload">
+                    <input type="file" id="cell-file" accept="image/*">
+                    <p>点击或拖拽上传图片</p>
+                </div>
+                <div class="image-info" id="cell-image-info"></div>
+                
+                <div class="controls">
+                    <button class="btn btn-primary" id="cell-count-btn" disabled>裁剪并计数</button>
+                    <button class="btn btn-secondary" id="cell-undo-btn" disabled>撤销</button>
+                    <button class="btn btn-secondary" id="cell-reset-btn" disabled>重置</button>
+                    <button class="btn btn-success" id="cell-export-btn" disabled>导出结果</button>
+                </div>
+                
+                <div class="params" id="cell-params">
+                    <details>
+                        <summary style="cursor:pointer;color:#666;">参数调节面板</summary>
+                        <div class="param-group">
+                            <label>NMS IoU 阈值 <span class="param-value" id="cell-nms-val">0.3</span></label>
+                            <input type="range" id="cell-nms" min="0.1" max="0.9" value="0.3" step="0.01">
+                        </div>
+                        <div class="param-group">
+                            <label>温度 <span class="param-value" id="cell-temp-val">0.1</span></label>
+                            <input type="range" id="cell-temp" min="0.0" max="1.0" value="0.1" step="0.1">
+                        </div>
+                        <div class="param-group">
+                            <label>推理模式</label>
+                            <select id="cell-gen-mode" style="width:100%;padding:6px;border:1px solid #ddd;border-radius:4px;font-size:13px;">
+                                <option value="hybrid" selected>混合模式 (Hybrid)</option>
+                                <option value="fast">快速模式 (MTP)</option>
+                                <option value="slow">精细模式 (NTP)</option>
+                            </select>
+                        </div>
+                    </details>
+                </div>
+                
+                <div id="cell-info"></div>
+            </div>
+            
+            <div class="panel right-panel">
+                <div class="stats">
+                    <div class="stat-item">
+                        <div class="stat-label">当前数量</div>
+                        <div class="stat-value" id="cell-count">0</div>
+                    </div>
+                </div>
+                
+                <div class="toolbar">
+                    <button class="zoom-btn" id="cell-zoom-out" title="缩小">-</button>
+                    <span class="zoom-level" id="cell-zoom-level">100%</span>
+                    <button class="zoom-btn" id="cell-zoom-in" title="放大">+</button>
+                    <button class="zoom-btn" id="cell-zoom-fit" title="适应">&#x2922;</button>
+                    <div class="toolbar-sep"></div>
+                    <button class="zoom-btn" id="cell-pan-toggle" title="平移模式">&#x2725;</button>
+                    <div class="toolbar-sep"></div>
+                    <div class="mode-toggle">
+                        <button class="mode-btn active" id="cell-mode-point" data-mode="point">标点模式</button>
+                        <button class="mode-btn" id="cell-mode-select" data-mode="select">框选模式</button>
+                    </div>
+                </div>
+                
+                <div class="canvas-container" id="cell-canvas-container">
+                    <canvas id="cell-canvas"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="loading" id="loading">
+        <div style="text-align:center;color:white;">
+            <div class="spinner"></div>
+            <p style="margin-top:16px;" id="loading-text">处理中...</p>
+        </div>
+    </div>
+    
+    <script>
+        const API_BASE = window.location.origin;
+        const CLICK_THRESHOLD = 15;
+        
+        const state = {
+            colony: {
+                image: null,
+                originalImage: null,
+                points: [],
+                history: [],
+                zoom: 1,
+                panX: 0,
+                panY: 0,
+                isPanning: false,
+                panMode: false,
+                panStart: null,
+                scrollStart: null,
+                canvas: null,
+                ctx: null,
+                fileName: '',
+            },
+            cell: {
+                image: null,
+                originalImage: null,
+                points: [],
+                history: [],
+                zoom: 1,
+                panX: 0,
+                panY: 0,
+                isPanning: false,
+                panMode: false,
+                panStart: null,
+                scrollStart: null,
+                selection: null,
+                canvas: null,
+                ctx: null,
+                interactionMode: 'point',
+                fileName: '',
+            }
+        };
+        
+        function loadImage(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => resolve(img);
+                    img.onerror = reject;
+                    img.src = e.target.result;
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+        
+        function showLoading(show, text) {
+            document.getElementById('loading').classList.toggle('active', show);
+            if (text) document.getElementById('loading-text').textContent = text;
+        }
+        
+        function showInfo(type, message) {
+            const infoBox = document.getElementById(`${type}-info`);
+            if (message) {
+                infoBox.innerHTML = `<div class="info-box">${message}</div>`;
+            } else {
+                infoBox.innerHTML = '';
+            }
+        }
+        
+        function showError(type, message) {
+            const infoBox = document.getElementById(`${type}-info`);
+            infoBox.innerHTML = `<div class="error-box">${message}</div>`;
+        }
+        
+        function deepCopyPoints(points) {
+            return points.map(p => ({ ...p }));
+        }
+        
+        function getCanvasDisplayScale(canvas) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                scaleX: canvas.width / rect.width,
+                scaleY: canvas.height / rect.height,
+                rect,
+            };
+        }
+        
+        function getCanvasCoords(e, canvas, zoom, panX, panY) {
+            const rect = canvas.getBoundingClientRect();
+            const displayScaleX = canvas.width / rect.width;
+            const displayScaleY = canvas.height / rect.height;
+            const pixelX = (e.clientX - rect.left) * displayScaleX;
+            const pixelY = (e.clientY - rect.top) * displayScaleY;
+            return {
+                x: (pixelX - panX) / zoom,
+                y: (pixelY - panY) / zoom,
+            };
+        }
+        
+        function drawCanvas(type) {
+            const s = state[type];
+            if (!s.image) return;
+            
+            const canvas = s.canvas;
+            const ctx = s.ctx;
+            const container = document.getElementById(`${type}-canvas-container`);
+            
+            const baseW = s.image.width * s.zoom;
+            const baseH = s.image.height * s.zoom;
+            canvas.width = baseW;
+            canvas.height = baseH;
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.save();
+            ctx.translate(s.panX, s.panY);
+            ctx.drawImage(s.image, 0, 0, baseW, baseH);
+            
+            s.points.forEach((p, i) => {
+                const x = p.x * s.zoom;
+                const y = p.y * s.zoom;
+                const r = Math.max(2, 2 * s.zoom);
+                
+                ctx.beginPath();
+                ctx.arc(x, y, r, 0, Math.PI * 2);
+                ctx.fillStyle = p.source === 'manual' ? '#00ff00' : '#ff0000';
+                ctx.fill();
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            });
+            
+            if (type === 'cell' && s.selection) {
+                ctx.strokeStyle = '#667eea';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([5, 5]);
+                ctx.strokeRect(
+                    s.selection.x1 * s.zoom,
+                    s.selection.y1 * s.zoom,
+                    (s.selection.x2 - s.selection.x1) * s.zoom,
+                    (s.selection.y2 - s.selection.y1) * s.zoom
+                );
+                ctx.setLineDash([]);
+            }
+            
+            ctx.restore();
+            
+            document.getElementById(`${type}-count`).textContent = s.points.length;
+            document.getElementById(`${type}-zoom-level`).textContent = Math.round(s.zoom * 100) + '%';
+        }
+        
+        function getImageBase64(type) {
+            const s = state[type];
+            if (!s.originalImage) return null;
+            const canvas = document.createElement('canvas');
+            canvas.width = s.originalImage.width;
+            canvas.height = s.originalImage.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(s.originalImage, 0, 0);
+            return canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
+        }
+        
+        function computeFitZoom(type) {
+            const s = state[type];
+            if (!s.image) return 1;
+            const container = document.getElementById(`${type}-canvas-container`);
+            const padding = 16;
+            const availW = container.clientWidth - padding;
+            const availH = container.clientHeight - padding;
+            const scaleX = availW / s.image.width;
+            const scaleY = availH / s.image.height;
+            return Math.min(scaleX, scaleY, 1);
+        }
+        
+        function updateButtonStates(type) {
+            const s = state[type];
+            const hasImage = !!s.originalImage;
+            const hasPoints = s.points.length > 0;
+            const hasHistory = s.history.length > 0;
+            const isModified = hasPoints || hasHistory;
+            
+            document.getElementById(`${type}-count-btn`).disabled = !hasImage;
+            document.getElementById(`${type}-undo-btn`).disabled = !hasHistory;
+            document.getElementById(`${type}-reset-btn`).disabled = !isModified;
+            document.getElementById(`${type}-export-btn`).disabled = !hasPoints;
+        }
+        
+        async function countColony() {
+            const s = state.colony;
+            if (!s.originalImage) return;
+            
+            showLoading(true, '正在进行菌落计数...');
+            
+            const formData = new FormData();
+            const b64 = getImageBase64('colony');
+            const binaryStr = atob(b64);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+            const blob = new Blob([bytes], { type: 'image/jpeg' });
+            formData.append('file', blob, 'image.jpg');
+            formData.append('sparse_threshold', document.getElementById('colony-sparse').value);
+            formData.append('dense_threshold', document.getElementById('colony-dense').value);
+            formData.append('nms_iou_threshold', document.getElementById('colony-nms').value);
+            formData.append('dedup_distance', document.getElementById('colony-dedup').value);
+            formData.append('clahe_clip_limit', document.getElementById('colony-clahe').value);
+            formData.append('tile_grid_size', document.getElementById('colony-tile').value);
+            formData.append('watershed_area_factor', document.getElementById('colony-ws-area').value);
+            formData.append('watershed_dist_ratio', document.getElementById('colony-ws-dist').value);
+            formData.append('watershed_min_area_ratio', document.getElementById('colony-ws-min').value);
+            
+            try {
+                const resp = await fetch(`${API_BASE}/api/colony/count`, { method: 'POST', body: formData });
+                const data = await resp.json();
+                
+                if (data.success) {
+                    s.points = data.points;
+                    s.history = [];
+                    s.panX = 0;
+                    s.panY = 0;
+                    
+                    const img = new Image();
+                    img.onload = () => {
+                        s.image = img;
+                        drawCanvas('colony');
+                        updateButtonStates('colony');
+                    };
+                    img.src = `data:image/jpeg;base64,${data.image_base64}`;
+                    
+                    showInfo('colony', `阶段: ${data.stage} | 原始检测: ${data.raw_count} | 最终计数: ${data.count}`);
+                } else {
+                    showError('colony', data.error);
+                }
+            } catch (e) {
+                showError('colony', `请求失败: ${e.message}`);
+            } finally {
+                showLoading(false);
+            }
+        }
+        
+        async function countCell() {
+            const s = state.cell;
+            if (!s.originalImage) return;
+            
+            showLoading(true, '正在进行细胞计数...');
+            
+            const formData = new FormData();
+            const b64 = getImageBase64('cell');
+            const binaryStr = atob(b64);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+            const blob = new Blob([bytes], { type: 'image/jpeg' });
+            formData.append('file', blob, 'image.jpg');
+            formData.append('nms_iou_threshold', document.getElementById('cell-nms').value);
+            formData.append('temperature', document.getElementById('cell-temp').value);
+            formData.append('generation_mode', document.getElementById('cell-gen-mode').value);
+            
+            if (s.selection) {
+                formData.append('x1', s.selection.x1);
+                formData.append('y1', s.selection.y1);
+                formData.append('x2', s.selection.x2);
+                formData.append('y2', s.selection.y2);
+            }
+            
+            try {
+                const resp = await fetch(`${API_BASE}/api/cell/count`, { method: 'POST', body: formData });
+                const data = await resp.json();
+                
+                if (data.success) {
+                    s.points = data.points;
+                    s.history = [];
+                    s.selection = null;
+                    s.panX = 0;
+                    s.panY = 0;
+                    
+                    const img = new Image();
+                    img.onload = () => {
+                        s.image = img;
+                        drawCanvas('cell');
+                        updateButtonStates('cell');
+                    };
+                    img.src = `data:image/jpeg;base64,${data.image_base64}`;
+                    
+                    showInfo('cell', `${data.crop_info} | 原始检测: ${data.raw_count} | 最终计数: ${data.count}`);
+                } else {
+                    showError('cell', data.error);
+                }
+            } catch (e) {
+                showError('cell', `请求失败: ${e.message}`);
+            } finally {
+                showLoading(false);
+            }
+        }
+        
+        function exportResults(type) {
+            const s = state[type];
+            if (!s.points.length) return;
+            
+            const label = type === 'colony' ? '菌落' : '细胞';
+            let csv = '\uFEFF序号,X,Y,类型\n';
+            s.points.forEach((p, i) => {
+                csv += `${i + 1},${p.x.toFixed(1)},${p.y.toFixed(1)},${p.source === 'manual' ? '手动' : '自动'}\n`;
+            });
+            csv += `\n总计,${s.points.length}\n`;
+            
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${label}_计数结果_${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+        
+        function setupType(type) {
+            const s = state[type];
+            const uploadArea = document.getElementById(`${type}-upload`);
+            const fileInput = document.getElementById(`${type}-file`);
+            const countBtn = document.getElementById(`${type}-count-btn`);
+            const undoBtn = document.getElementById(`${type}-undo-btn`);
+            const resetBtn = document.getElementById(`${type}-reset-btn`);
+            const exportBtn = document.getElementById(`${type}-export-btn`);
+            const canvas = document.getElementById(`${type}-canvas`);
+            const container = document.getElementById(`${type}-canvas-container`);
+            const panToggle = document.getElementById(`${type}-pan-toggle`);
+            
+            s.canvas = canvas;
+            s.ctx = canvas.getContext('2d');
+            
+            uploadArea.addEventListener('click', () => fileInput.click());
+            uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.style.borderColor = '#667eea'; });
+            uploadArea.addEventListener('dragleave', () => { uploadArea.style.borderColor = uploadArea.classList.contains('has-file') ? '#c8e6c9' : '#ddd'; });
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.style.borderColor = '#ddd';
+                if (e.dataTransfer.files.length) {
+                    fileInput.files = e.dataTransfer.files;
+                    fileInput.dispatchEvent(new Event('change'));
+                }
+            });
+            
+            fileInput.addEventListener('change', async (e) => {
+                if (e.target.files.length) {
+                    const file = e.target.files[0];
+                    const img = await loadImage(file);
+                    s.originalImage = img;
+                    s.image = img;
+                    s.points = [];
+                    s.history = [];
+                    s.zoom = 1;
+                    s.panX = 0;
+                    s.panY = 0;
+                    s.selection = null;
+                    s.fileName = file.name;
+                    drawCanvas(type);
+                    updateButtonStates(type);
+                    showInfo(type, '');
+                    
+                    uploadArea.classList.add('has-file');
+                    uploadArea.querySelector('p').textContent = file.name;
+                    document.getElementById(`${type}-image-info`).textContent = `${img.width} x ${img.height} px`;
+                }
+            });
+            
+            let mouseDownPos = null;
+            let mouseDownTime = 0;
+            let didPan = false;
+            let isSelecting = false;
+            let selectStart = null;
+            
+            canvas.addEventListener('mousedown', (e) => {
+                if (!s.image) return;
+                e.preventDefault();
+                
+                if (s.panMode || e.button === 1) {
+                    s.isPanning = true;
+                    didPan = false;
+                    s.panStart = { x: e.clientX, y: e.clientY, scrollLeft: container.scrollLeft, scrollTop: container.scrollTop };
+                    return;
+                }
+                
+                if (type === 'cell' && s.interactionMode === 'select' && e.button === 0) {
+                    isSelecting = true;
+                    const coords = getCanvasCoords(e, canvas, s.zoom, s.panX, s.panY);
+                    selectStart = coords;
+                    s.selection = { x1: coords.x, y1: coords.y, x2: coords.x, y2: coords.y };
+                    return;
+                }
+                
+                mouseDownPos = getCanvasCoords(e, canvas, s.zoom, s.panX, s.panY);
+                mouseDownTime = Date.now();
+                didPan = false;
+            });
+            
+            canvas.addEventListener('mousemove', (e) => {
+                if (s.isPanning && s.panStart) {
+                    const dx = e.clientX - s.panStart.x;
+                    const dy = e.clientY - s.panStart.y;
+                    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) didPan = true;
+                    container.scrollLeft = s.panStart.scrollLeft - dx;
+                    container.scrollTop = s.panStart.scrollTop - dy;
+                    return;
+                }
+                
+                if (isSelecting && selectStart) {
+                    const coords = getCanvasCoords(e, canvas, s.zoom, s.zoom > 0 ? s.panX : 0, s.panY);
+                    s.selection = {
+                        x1: Math.min(selectStart.x, coords.x),
+                        y1: Math.min(selectStart.y, coords.y),
+                        x2: Math.max(selectStart.x, coords.x),
+                        y2: Math.max(selectStart.y, coords.y),
+                    };
+                    drawCanvas(type);
+                    return;
+                }
+            });
+            
+            canvas.addEventListener('mouseup', (e) => {
+                if (s.isPanning) {
+                    s.isPanning = false;
+                    s.panStart = null;
+                    return;
+                }
+                
+                if (isSelecting) {
+                    isSelecting = false;
+                    selectStart = null;
+                    if (s.selection) {
+                        const w = Math.abs(s.selection.x2 - s.selection.x1);
+                        const h = Math.abs(s.selection.y2 - s.selection.y1);
+                        if (w < 5 || h < 5) s.selection = null;
+                    }
+                    drawCanvas(type);
+                    return;
+                }
+                
+                if (!s.image || didPan) return;
+                if (Date.now() - mouseDownTime > 500) return;
+                
+                const coords = getCanvasCoords(e, canvas, s.zoom, s.panX, s.panY);
+                const { x, y } = coords;
+                
+                // Shift+点击 = 删除点，直接点击 = 添加点
+                if (e.shiftKey) {
+                    for (let i = 0; i < s.points.length; i++) {
+                        const p = s.points[i];
+                        const threshold = CLICK_THRESHOLD / s.zoom;
+                        if ((p.x - x) ** 2 + (p.y - y) ** 2 < threshold ** 2) {
+                            s.history.push(deepCopyPoints(s.points));
+                            s.points.splice(i, 1);
+                            drawCanvas(type);
+                            updateButtonStates(type);
+                            return;
+                        }
+                    }
+                } else {
+                    s.history.push(deepCopyPoints(s.points));
+                    s.points.push({ x, y, source: 'manual' });
+                    drawCanvas(type);
+                    updateButtonStates(type);
+                }
+            });
+            
+            canvas.addEventListener('mouseleave', () => {
+                if (s.isPanning) {
+                    s.isPanning = false;
+                    s.panStart = null;
+                }
+                if (isSelecting) {
+                    isSelecting = false;
+                    selectStart = null;
+                }
+            });
+            
+            container.addEventListener('wheel', (e) => {
+                if (!s.image) return;
+                if (!e.ctrlKey && !e.metaKey) return;
+                e.preventDefault();
+                
+                const rect = canvas.getBoundingClientRect();
+                const mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+                const mouseY = (e.clientY - rect.top) * (canvas.height / rect.height);
+                
+                const oldZoom = s.zoom;
+                const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+                s.zoom = Math.max(0.1, Math.min(s.zoom * factor, 10));
+                
+                const scale = s.zoom / oldZoom;
+                s.panX = mouseX - (mouseX - s.panX) * scale;
+                s.panY = mouseY - (mouseY - s.panY) * scale;
+                
+                drawCanvas(type);
+            }, { passive: false });
+            
+            panToggle.addEventListener('click', () => {
+                s.panMode = !s.panMode;
+                panToggle.style.background = s.panMode ? '#667eea' : 'white';
+                panToggle.style.color = s.panMode ? 'white' : '#333';
+                container.classList.toggle('panning', s.panMode);
+            });
+            
+            countBtn.addEventListener('click', () => type === 'colony' ? countColony() : countCell());
+            exportBtn.addEventListener('click', () => exportResults(type));
+            
+            undoBtn.addEventListener('click', () => {
+                if (s.history.length) {
+                    s.points = s.history.pop();
+                    drawCanvas(type);
+                    updateButtonStates(type);
+                }
+            });
+            
+            resetBtn.addEventListener('click', () => {
+                if (s.originalImage) {
+                    s.image = s.originalImage;
+                    s.points = [];
+                    s.history = [];
+                    s.selection = null;
+                    s.zoom = 1;
+                    s.panX = 0;
+                    s.panY = 0;
+                    drawCanvas(type);
+                    updateButtonStates(type);
+                    showInfo(type, '');
+                }
+            });
+            
+            document.getElementById(`${type}-zoom-in`).addEventListener('click', () => {
+                s.zoom = Math.min(s.zoom * 1.2, 10);
+                drawCanvas(type);
+            });
+            document.getElementById(`${type}-zoom-out`).addEventListener('click', () => {
+                s.zoom = Math.max(s.zoom / 1.2, 0.1);
+                drawCanvas(type);
+            });
+            document.getElementById(`${type}-zoom-fit`).addEventListener('click', () => {
+                if (s.image) {
+                    s.zoom = computeFitZoom(type);
+                    s.panX = 0;
+                    s.panY = 0;
+                    drawCanvas(type);
+                }
+            });
+        }
+        
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById(`${tab.dataset.tab}-tab`).classList.add('active');
+            });
+        });
+        
+        document.querySelectorAll('input[type="range"]').forEach(input => {
+            input.addEventListener('input', () => {
+                const valEl = document.getElementById(`${input.id}-val`);
+                if (valEl) valEl.textContent = input.value;
+            });
+        });
+        
+        document.querySelectorAll('.mode-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const parent = btn.parentElement;
+                parent.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                state.cell.interactionMode = btn.dataset.mode;
+            });
+        });
+        
+        setupType('colony');
+        setupType('cell');
+    </script>
+</body>
+</html>

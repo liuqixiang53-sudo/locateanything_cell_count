@@ -1,0 +1,32 @@
+{
+  "1.png": {
+    "count": 18,
+    "raw_count": 18,
+    "stage": "sparse"
+  },
+  "2.png": {
+    "count": 204,
+    "raw_count": 185,
+    "stage": "dense"
+  },
+  "3.png": {
+    "count": 103,
+    "raw_count": 144,
+    "stage": "medium"
+  },
+  "4.png": {
+    "count": 131,
+    "raw_count": 124,
+    "stage": "medium"
+  },
+  "5.png": {
+    "count": 48,
+    "raw_count": 53,
+    "stage": "medium"
+  },
+  "counting_task_test1.png": {
+    "count": 88,
+    "raw_count": 198,
+    "stage": "dense"
+  }
+}
