@@ -1,0 +1,2540 @@
+第一部分：FastAPI后端服务（main.py）
+
+"""
+菌落与细胞计数分析软件后端服务
+
+基于 FastAPI 实现，对外提供菌落/细胞的自动计数、手动标注、批量处理、
+结果导出等接口。LocateAnything 模型以全局单例方式加载，
+菌落计数和细胞计数共用同一个模型实例，避免重复占用显存。
+"""
+import os
+import sys
+import json
+import io
+import time
+import base64
+import logging
+import traceback
+
+import torch
+from PIL import Image, ImageDraw, ImageFont
+
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+
+# 把 Eagle 项目加进搜索路径，复用其中的 LocateAnythingWorker
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "Eagle", "Embodied"))
+sys.path.insert(0, PROJECT_ROOT)
+
+from locateanything_worker import LocateAnythingWorker
+from count_simple import nms as cell_nms, parse_boxes as cell_parse_boxes
+from colony_count_adaptive import AdaptiveColonyCounter
+
+# 本地 LocateAnything-3B 模型目录
+MODEL_PATH = os.path.join(PROJECT_ROOT, "LocateAnything-3B")
+
+# 有 GPU 就用 GPU
+DEVICE = "cuda"
+
+# 上传文件与结果输出的存放目录
+UPLOAD_DIR = os.path.join(PROJECT_ROOT, "colony_cell_gui_fastapi", "uploads")
+RESULT_DIR = os.path.join(PROJECT_ROOT, "colony_cell_gui_fastapi", "results")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(RESULT_DIR, exist_ok=True)
+
+# 细胞检测用的提示词
+# 特别强调了拥挤/粘连的细胞也要逐个框出，防止模型把一堆细胞合并成一个大框
+CELL_PROMPT = (
+    "Locate all the instances that match the following description: cell. "
+    "These appear as small circular, oval, or semi-circular shapes. "
+    "When cells are crowded or touching, they may be deformed, squeezed into "
+    "ellipses or half-circles. Even if cells are touching or overlapping, "
+    "each cell must be enclosed in a SEPARATE bounding box. "
+    "Do NOT group multiple cells into one large box. "
+    "Each bounding box should tightly enclose a single cell."
+)
+
+# 输入图片的最大边长，超过会先缩放，防止显存撑爆
+MAX_IMAGE_SIZE = 2048
+
+# 允许上传的图片扩展名白名单
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+
+# 单个文件最大 50 MB
+MAX_FILE_SIZE = 50 * 1024 * 1024
+
+# 日志配置，方便排查接口问题
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("colony_cell_api")
+
+app = FastAPI(
+    title="菌落与细胞计数分析软件",
+    description="基于 LocateAnything 模型的目标检测与计数服务",
+    version="1.0.0",
+)
+
+# 前端可能从别的端口访问，放开跨域
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 模型实例全局只加载一次，菌落和细胞计数共用
+SHARED_WORKER = None
+COLONY_COUNTER = None
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """记录每个请求的方法、路径和耗时"""
+    start_time = time.time()
+    path = request.url.path
+    method = request.method
+
+    # 请求进来时打一条日志
+    logger.info(f"--> {method} {path}")
+    # 调用下一个中间件或路由处理函数
+    response = await call_next(request)
+    # 计算耗时并记录响应状态
+    process_time = time.time() - start_time
+    logger.info(f"<-- {method} {path} {response.status_code} ({process_time:.3f}s)")
+    return response
+
+
+def get_shared_worker():
+    """懒加载共享的模型实例"""
+    global SHARED_WORKER
+    # 只在第一次调用时真正加载模型
+    if SHARED_WORKER is None:
+        logger.info(f"Loading shared model from: {MODEL_PATH}")
+        logger.info(f"Using device: {DEVICE}")
+        SHARED_WORKER = LocateAnythingWorker(model_path=MODEL_PATH, device=DEVICE)
+    return SHARED_WORKER
+
+
+def get_colony_counter():
+    """懒加载菌落计数器，内部复用同一个模型实例"""
+    global COLONY_COUNTER
+    if COLONY_COUNTER is None:
+        # 把共享 worker 传进去，避免重复加载模型
+        COLONY_COUNTER = AdaptiveColonyCounter(worker=get_shared_worker(), device=DEVICE)
+    return COLONY_COUNTER
+
+
+def get_cell_worker():
+    """细胞检测直接用共享实例"""
+    return get_shared_worker()
+
+
+def cleanup_cuda_memory():
+    """每次推理完清一下缓存的显存，顺便打印占用情况"""
+    if torch.cuda.is_available():
+        # 释放缓存的显存块
+        torch.cuda.empty_cache()
+        # 打印当前显存占用，方便监控
+        allocated = torch.cuda.memory_allocated() / 1024 ** 3
+        reserved = torch.cuda.memory_reserved() / 1024 ** 3
+        logger.info(f"[CUDA Cleanup] Allocated: {allocated:.2f} GiB, Reserved: {reserved:.2f} GiB")
+
+
+def limit_image_size(image: Image.Image, max_size: int = MAX_IMAGE_SIZE) -> Image.Image:
+    """超大图先等比缩小，LANCZOS 插值质量损失比较小"""
+    # 只缩放不放大，保持原图质量
+    if max(image.size) > max_size:
+        image.thumbnail((max_size, max_size), Image.LANCZOS)
+    return image
+
+
+def validate_image_file(file_data: bytes, filename: str) -> None:
+    """
+    校验上传文件是否可用：
+      1. 扩展名在白名单里
+      2. 大小不超过 MAX_FILE_SIZE
+      3. PIL 能正常解析（verify 只读文件头，开销很小）
+    任何一条不满足就直接返回 400
+    """
+    # 取文件扩展名并转小写
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件格式: {ext}，支持的格式: {', '.join(ALLOWED_EXTENSIONS)}",
+        )
+    # 检查文件大小是否超限
+    if len(file_data) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件过大 ({len(file_data) / 1024 / 1024:.1f} MB)，最大支持 {MAX_FILE_SIZE / 1024 / 1024:.0f} MB",
+        )
+    # 尝试解析文件头，排除损坏的文件
+    try:
+        img = Image.open(io.BytesIO(file_data))
+        img.verify()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"图片文件损坏或格式无效: {str(e)}")
+
+
+def decode_image_file(file_data: bytes) -> Image.Image:
+    """字节流解码成 RGB 格式的 PIL Image"""
+    try:
+        return Image.open(io.BytesIO(file_data)).convert("RGB")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"图片格式无效: {str(e)}")
+
+
+def get_image_info(image: Image.Image) -> dict:
+    """取图片的基本信息，随接口一起返回给前端"""
+    return {
+        "width": image.width,
+        "height": image.height,
+        "mode": image.mode,
+        # 粗略估算内存占用：宽*高*3通道/1024
+        "size_kb": image.size[0] * image.size[1] * 3 // 1024 if image.mode == "RGB" else 0,
+    }
+
+
+def load_font(size: int = 24):
+    """优先用项目自带的中文字体，找不到就退回系统字体"""
+    # 候选字体列表，按优先级排列
+    candidates = [
+        os.path.join(PROJECT_ROOT, "LocateAnything", "assets", "LXGWWenKai-Bold.ttf"),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            try:
+                return ImageFont.truetype(p, size)
+            except Exception:
+                pass
+    # 都找不到就用 PIL 内置字体
+    return ImageFont.load_default()
+
+
+def image_to_base64(img: Image.Image) -> str:
+    """PIL Image 转 base64，给前端直接内嵌显示用"""
+    buffered = io.BytesIO()
+    # 确保是 RGB 模式，JPEG 不支持 RGBA
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    # 以 95% 质量保存，平衡清晰度和体积
+    img.save(buffered, format="JPEG", quality=95)
+    return base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+
+def draw_points_on_image(image: Image.Image, points: list, point_radius: int = 5) -> Image.Image:
+    """
+    在原图上绘制计数点
+    红色 = 自动检测结果，绿色 = 手动添加的点
+    左上角再画一个白底计数牌
+    """
+    if image is None:
+        return None
+    # 复制一份，不改原图
+    draw_image = image.copy()
+    if draw_image.mode != "RGB":
+        draw_image = draw_image.convert("RGB")
+    draw = ImageDraw.Draw(draw_image)
+
+    # 逐个画点，根据来源选颜色
+    for p in points:
+        x, y = p["x"], p["y"]
+        # 手动点绿色，自动点红色
+        color = (0, 255, 0) if p.get("source") == "manual" else (255, 0, 0)
+        r = point_radius
+        # 画实心圆 + 白色描边，在深色背景上也看得清
+        draw.ellipse([x - r, y - r, x + r, y + r], fill=color, outline="white", width=2)
+
+    # 左上角画计数牌
+    if points:
+        font = load_font(24)
+        count_text = f"Count: {len(points)}"
+        # 计算文字包围盒，确定背景矩形大小
+        bbox = draw.textbbox((0, 0), count_text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        margin = 8
+        # 白底矩形
+        draw.rectangle(
+            [margin, margin, margin + tw + margin * 2, margin + th + margin * 2],
+            fill="white",
+        )
+        # 黑色文字
+        draw.text((margin * 2, margin), count_text, fill="black", font=font)
+
+    return draw_image
+
+
+@app.post("/api/colony/count")
+async def colony_count(
+    file: UploadFile = File(...),
+    sparse_threshold: int = Form(50),
+    dense_threshold: int = Form(150),
+    nms_iou_threshold: float = Form(0.3),
+    dedup_distance: float = Form(3.0),
+    clahe_clip_limit: float = Form(2.0),
+    point_radius: int = Form(2),
+    tile_grid_size: int = Form(8),
+    watershed_area_factor: float = Form(2.0),
+    watershed_dist_ratio: float = Form(0.3),
+    watershed_min_area_ratio: float = Form(0.0005),
+):
+    """
+    菌落自动计数
+    所有算法参数都由前端可调，默认值适合多数培养皿照片
+    """
+    try:
+        # 读取上传文件并校验
+        file_data = await file.read()
+        validate_image_file(file_data, file.filename)
+        # 解码图片并限制尺寸
+        image = decode_image_file(file_data)
+        image = limit_image_size(image)
+
+        # 获取菌落计数器（内部会懒加载模型）
+        counter = get_colony_counter()
+        # 执行自适应计数，根据密度自动选择策略
+        result = counter.count_colonies_adaptive(
+            image,
+            sparse_threshold=int(sparse_threshold),
+            dense_threshold=int(dense_threshold),
+            nms_iou_threshold=float(nms_iou_threshold),
+            dedup_distance=float(dedup_distance),
+            clahe_clip_limit=float(clahe_clip_limit),
+            tile_grid_size=int(tile_grid_size),
+            watershed_area_factor=float(watershed_area_factor),
+            watershed_dist_ratio=float(watershed_dist_ratio),
+            watershed_min_area_ratio=float(watershed_min_area_ratio),
+        )
+
+        # 把检测到的中心点转成前端需要的格式
+        centers = result.get("centers", [])
+        points = [{"x": c["x"], "y": c["y"], "source": "auto"} for c in centers]
+        # 在原图上画点生成可视化图
+        vis_image = draw_points_on_image(image, points, point_radius=int(point_radius))
+
+        return JSONResponse({
+            "success": True,
+            "count": len(points),
+            "raw_count": result.get("raw_count", 0),
+            "stage": result.get("stage", ""),
+            "points": points,
+            "image_base64": image_to_base64(vis_image),
+        })
+    except HTTPException:
+        # 校验类的异常直接抛出，由框架统一处理
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+            "count": 0,
+            "points": [],
+            "image_base64": None,
+        }, status_code=500)
+    finally:
+        # 无论成功失败都清理显存
+        cleanup_cuda_memory()
+
+
+@app.post("/api/colony/add_point")
+async def colony_add_point(
+    file: UploadFile = File(...),
+    x: float = Form(...),
+    y: float = Form(...),
+    points_json: str = Form("[]"),
+):
+    """手动补一个漏检的菌落标记点"""
+    try:
+        file_data = await file.read()
+        image = decode_image_file(file_data)
+        # 解析现有点列表，追加新点
+        points = json.loads(points_json)
+        points.append({"x": float(x), "y": float(y), "source": "manual"})
+        # 重新绘制所有点
+        vis_image = draw_points_on_image(image, points)
+        return JSONResponse({
+            "success": True,
+            "count": len(points),
+            "points": points,
+            "image_base64": image_to_base64(vis_image),
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/colony/remove_point")
+async def colony_remove_point(
+    file: UploadFile = File(...),
+    index: int = Form(...),
+    points_json: str = Form("[]"),
+):
+    """删除一个误检的标记点"""
+    try:
+        file_data = await file.read()
+        image = decode_image_file(file_data)
+        # 按索引删除，越界就忽略
+        points = json.loads(points_json)
+        if 0 <= index < len(points):
+            points.pop(index)
+        vis_image = draw_points_on_image(image, points)
+        return JSONResponse({
+            "success": True,
+            "count": len(points),
+            "points": points,
+            "image_base64": image_to_base64(vis_image),
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/cell/count")
+async def cell_count(
+    file: UploadFile = File(...),
+    x1: float = Form(None),
+    y1: float = Form(None),
+    x2: float = Form(None),
+    y2: float = Form(None),
+    nms_iou_threshold: float = Form(0.3),
+    point_radius: int = Form(2),
+    temperature: float = Form(0.1),
+    generation_mode: str = Form("hybrid"),
+):
+    """
+    细胞计数
+    支持前端框选一个区域，只对该区域做检测，大视野图片下能省不少时间
+    """
+    try:
+        # 读取并校验上传文件
+        file_data = await file.read()
+        validate_image_file(file_data, file.filename)
+        image = decode_image_file(file_data)
+        image = limit_image_size(image)
+
+        # 处理可选的裁剪区域
+        crop_info = "使用整图"
+        if x1 is not None and y1 is not None and x2 is not None and y2 is not None:
+            crop_box = (int(x1), int(y1), int(x2), int(y2))
+            # 区域太小的话裁剪没有意义，还容易误检
+            if crop_box[2] > crop_box[0] + 10 and crop_box[3] > crop_box[1] + 10:
+                image = image.crop(crop_box)
+                crop_info = f"裁剪区域: ({crop_box[0]},{crop_box[1]})-({crop_box[2]},{crop_box[3]})"
+
+        # 记录裁剪后的尺寸，用于坐标换算
+        image_width, image_height = image.size
+
+        # 调用模型推理
+        worker = get_cell_worker()
+        result = worker.predict(
+            image,
+            CELL_PROMPT,
+            generation_mode=generation_mode,
+            temperature=float(temperature),
+        )
+
+        # 解析模型输出的文本，提取边界框
+        answer = result["answer"]
+        boxes = cell_parse_boxes(answer, image_width, image_height)
+        raw_count = len(boxes)
+        # NMS 去除重叠框
+        boxes = cell_nms(boxes, float(nms_iou_threshold))
+
+        # 把框的中心点提取出来作为计数点
+        points = []
+        for box in boxes:
+            cx = (box["x1"] + box["x2"]) / 2
+            cy = (box["y1"] + box["y2"]) / 2
+            points.append({"x": cx, "y": cy, "source": "auto"})
+
+        # 生成可视化图
+        vis_image = draw_points_on_image(image, points, point_radius=int(point_radius))
+
+        return JSONResponse({
+            "success": True,
+            "count": len(points),
+            "raw_count": raw_count,
+            "crop_info": crop_info,
+            "points": points,
+            "image_base64": image_to_base64(vis_image),
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+            "count": 0,
+            "points": [],
+            "image_base64": None,
+        }, status_code=500)
+    finally:
+        cleanup_cuda_memory()
+
+
+@app.post("/api/cell/add_point")
+async def cell_add_point(
+    file: UploadFile = File(...),
+    x: float = Form(...),
+    y: float = Form(...),
+    points_json: str = Form("[]"),
+):
+    """手动添加细胞标记点"""
+    try:
+        file_data = await file.read()
+        image = decode_image_file(file_data)
+        points = json.loads(points_json)
+        points.append({"x": float(x), "y": float(y), "source": "manual"})
+        vis_image = draw_points_on_image(image, points)
+        return JSONResponse({
+            "success": True,
+            "count": len(points),
+            "points": points,
+            "image_base64": image_to_base64(vis_image),
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/cell/remove_point")
+async def cell_remove_point(
+    file: UploadFile = File(...),
+    index: int = Form(...),
+    points_json: str = Form("[]"),
+):
+    """删除细胞标记点"""
+    try:
+        file_data = await file.read()
+        image = decode_image_file(file_data)
+        points = json.loads(points_json)
+        if 0 <= index < len(points):
+            points.pop(index)
+        vis_image = draw_points_on_image(image, points)
+        return JSONResponse({
+            "success": True,
+            "count": len(points),
+            "points": points,
+            "image_base64": image_to_base64(vis_image),
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/health")
+async def health_check():
+    """健康检查"""
+    return {"status": "ok", "model_loaded": SHARED_WORKER is not None}
+
+
+@app.get("/")
+async def serve_frontend():
+    """返回前端页面"""
+    frontend_path = os.path.join(PROJECT_ROOT, "colony_cell_gui_fastapi", "frontend", "index.html")
+    if os.path.exists(frontend_path):
+        return FileResponse(frontend_path)
+    return JSONResponse({"error": "前端文件未找到"}, status_code=404)
+
+
+@app.post("/api/colony/batch_count")
+async def colony_batch_count(
+    files: list[UploadFile] = File(...),
+    sparse_threshold: int = Form(50),
+    dense_threshold: int = Form(150),
+    nms_iou_threshold: float = Form(0.3),
+    dedup_distance: float = Form(3.0),
+    clahe_clip_limit: float = Form(2.0),
+):
+    """批量菌落计数，一次处理多张图片"""
+    results = []
+    counter = get_colony_counter()
+
+    # 逐张处理，单张失败不影响其他图片
+    for file in files:
+        try:
+            file_data = await file.read()
+            image = decode_image_file(file_data)
+            image = limit_image_size(image)
+
+            # 执行计数
+            result = counter.count_colonies_adaptive(
+                image,
+                sparse_threshold=int(sparse_threshold),
+                dense_threshold=int(dense_threshold),
+                nms_iou_threshold=float(nms_iou_threshold),
+                dedup_distance=float(dedup_distance),
+                clahe_clip_limit=float(clahe_clip_limit),
+            )
+
+            # 组装结果
+            centers = result.get("centers", [])
+            points = [{"x": c["x"], "y": c["y"], "source": "auto"} for c in centers]
+            vis_image = draw_points_on_image(image, points)
+
+            results.append({
+                "filename": file.filename,
+                "success": True,
+                "count": len(points),
+                "stage": result.get("stage", ""),
+                "image_base64": image_to_base64(vis_image),
+            })
+        except Exception as e:
+            # 记录错误但继续处理下一张
+            logger.error(f"Batch processing error for {file.filename}: {e}")
+            results.append({
+                "filename": file.filename,
+                "success": False,
+                "error": str(e),
+                "count": 0,
+                "image_base64": None,
+            })
+
+    cleanup_cuda_memory()
+    return JSONResponse({"success": True, "results": results, "total": len(results)})
+
+
+@app.post("/api/cell/batch_count")
+async def cell_batch_count(
+    files: list[UploadFile] = File(...),
+    nms_iou_threshold: float = Form(0.3),
+    temperature: float = Form(0.1),
+    generation_mode: str = Form("hybrid"),
+):
+    """批量细胞计数"""
+    results = []
+    worker = get_cell_worker()
+
+    for file in files:
+        try:
+            file_data = await file.read()
+            image = decode_image_file(file_data)
+            image = limit_image_size(image)
+            image_width, image_height = image.size
+
+            # 模型推理
+            result = worker.predict(
+                image,
+                CELL_PROMPT,
+                generation_mode=generation_mode,
+                temperature=float(temperature),
+            )
+
+            # 解析并去重
+            answer = result["answer"]
+            boxes = cell_parse_boxes(answer, image_width, image_height)
+            boxes = cell_nms(boxes, float(nms_iou_threshold))
+
+            # 提取中心点
+            points = []
+            for box in boxes:
+                cx = (box["x1"] + box["x2"]) / 2
+                cy = (box["y1"] + box["y2"]) / 2
+                points.append({"x": cx, "y": cy, "source": "auto"})
+
+            vis_image = draw_points_on_image(image, points)
+
+            results.append({
+                "filename": file.filename,
+                "success": True,
+                "count": len(points),
+                "raw_count": len(boxes),
+                "image_base64": image_to_base64(vis_image),
+            })
+        except Exception as e:
+            logger.error(f"Batch processing error for {file.filename}: {e}")
+            results.append({
+                "filename": file.filename,
+                "success": False,
+                "error": str(e),
+                "count": 0,
+                "image_base64": None,
+            })
+
+    cleanup_cuda_memory()
+    return JSONResponse({"success": True, "results": results, "total": len(results)})
+
+
+@app.post("/api/export/csv")
+async def export_csv(
+    points_json: str = Form(...),
+    task_type: str = Form("colony"),
+    filename: str = Form("export"),
+    image_info_json: str = Form("{}"),
+):
+    """导出计数结果为 JSON 格式"""
+    try:
+        # 解析点列表和图片信息
+        points = json.loads(points_json)
+        image_info = json.loads(image_info_json)
+        label = "菌落" if task_type == "colony" else "细胞"
+
+        # 组装导出数据
+        export_data = {
+            "task_type": label,
+            "filename": filename,
+            "count": len(points),
+            "image_info": image_info,
+            "points": [
+                {
+                    "id": i + 1,
+                    "x": round(p["x"], 1),
+                    "y": round(p["y"], 1),
+                    "source": "手动" if p.get("source") == "manual" else "自动",
+                }
+                for i, p in enumerate(points)
+            ],
+            "export_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+        return JSONResponse({
+            "success": True,
+            "data": export_data,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/model/info")
+async def model_info():
+    """获取当前加载的模型信息"""
+    worker = get_shared_worker()
+    return JSONResponse({
+        "success": True,
+        "model_path": MODEL_PATH,
+        "device": DEVICE,
+        "model_loaded": worker is not None,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+    })
+
+
+@app.post("/api/model/reload")
+async def model_reload():
+    """重新加载模型（释放旧模型后重新初始化）"""
+    global SHARED_WORKER, COLONY_COUNTER
+    try:
+        # 释放旧实例，让 Python 回收引用
+        if SHARED_WORKER is not None:
+            del SHARED_WORKER
+            SHARED_WORKER = None
+        if COLONY_COUNTER is not None:
+            del COLONY_COUNTER
+            COLONY_COUNTER = None
+        # 清理显存碎片
+        cleanup_cuda_memory()
+
+        # 重新加载（get_shared_worker 内部会重新创建实例）
+        new_worker = get_shared_worker()
+        return JSONResponse({
+            "success": True,
+            "message": "模型重新加载成功",
+            "model_path": MODEL_PATH,
+            "device": DEVICE,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+        }, status_code=500)
+
+
+# 主入口：用 uvicorn 启动服务
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+    )
+
+
+第二部分：前端页面代码
+
+"""
+前端为一个单页应用，用的原生 HTML + CSS + JavaScript
+为了部署方便，并没有使用框架
+
+功能包括：
+  图片上传和预览
+  Canvas 绘制标注点
+  缩放和平移
+  点击添加/删除标记点
+  调用后端 API 做自动计数
+  结果导出为 CSV
+"""
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>菌落与细胞计数分析软件 V1.0</title>
+    <style>
+        /* 全局样式重置 */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; }
+
+        /* 头部样式，用了渐变色背景 */
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 16px 24px; }
+        .header h1 { font-size: 24px; margin-bottom: 4px; }
+        .header p { font-size: 14px; opacity: 0.9; }
+
+        /* Tab 切换栏 */
+        .tabs { display: flex; background: white; border-bottom: 1px solid #e0e0e0; padding: 0 24px; }
+        .tab { padding: 12px 24px; cursor: pointer; border: none; background: none; font-size: 16px; color: #666; position: relative; }
+        .tab.active { color: #667eea; font-weight: 600; }
+        /* 激活 tab 底部的指示条 */
+        .tab.active::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: #667eea; }
+
+        /* 主内容容器 */
+        .container { max-width: 1400px; margin: 24px auto; padding: 0 24px; }
+        .tab-content { display: none; }
+        .tab-content.active { display: flex; gap: 24px; }
+
+        /* 面板样式 */
+        .panel { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        .left-panel { flex: 1; min-width: 300px; }
+        .right-panel { flex: 2; min-width: 400px; }
+
+        /* 上传区域，虚线边框表示可点击 */
+        .upload-area { border: 2px dashed #ddd; border-radius: 8px; padding: 40px; text-align: center; cursor: pointer; transition: all 0.3s; }
+        .upload-area:hover { border-color: #667eea; background: #f8f9ff; }
+        /* 已选择文件后变成实线绿框 */
+        .upload-area.has-file { padding: 12px; border-style: solid; border-color: #c8e6c9; background: #f1f8e9; }
+        .upload-area input { display: none; }
+
+        /* Canvas 容器，可滚动 */
+        .canvas-container { position: relative; border: 1px solid #e0e0e0; border-radius: 8px; overflow: auto; min-height: 400px; max-height: 70vh; background: #fafafa; }
+        .canvas-container canvas { display: block; cursor: crosshair; }
+        /* 平移模式下换手势 */
+        .canvas-container.panning canvas { cursor: grab; }
+
+        /* 按钮通用样式 */
+        .controls { margin-top: 16px; display: flex; gap: 12px; flex-wrap: wrap; }
+        .btn { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+        .btn-primary { background: #667eea; color: white; }
+        .btn-secondary { background: #e0e0e0; color: #333; }
+        .btn-success { background: #4caf50; color: white; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* 统计信息卡片 */
+        .stats { display: flex; gap: 16px; margin-bottom: 16px; }
+        .stat-item { background: #f8f9ff; padding: 12px 16px; border-radius: 8px; flex: 1; }
+        .stat-label { font-size: 12px; color: #666; }
+        .stat-value { font-size: 24px; font-weight: 600; color: #333; }
+
+        /* 参数面板 */
+        .params { margin-top: 16px; }
+        .param-group { margin-bottom: 12px; }
+        .param-group label { display: block; font-size: 13px; color: #666; margin-bottom: 4px; }
+
+        /* 信息提示框 */
+        .info-box { background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 12px; }
+        .error-box { background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 6px; padding: 12px; color: #721c24; }
+
+        /* 全屏加载遮罩 */
+        .loading { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
+        .loading.active { display: flex; }
+        /* 旋转动画 */
+        .spinner { width: 50px; height: 50px; border: 4px solid #f3f3f3; border-top: 4px solid #667eea; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* 工具栏：缩放按钮等 */
+        .toolbar { display: flex; gap: 8px; align-items: center; padding: 8px 0; flex-wrap: wrap; }
+        .zoom-btn { width: 32px; height: 32px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer; font-size: 18px; }
+        .zoom-level { font-size: 14px; color: #666; min-width: 50px; text-align: center; }
+        /* 标点/框选模式切换 */
+        .mode-toggle { display: flex; border: 1px solid #ddd; border-radius: 6px; overflow: hidden; }
+        .mode-btn { padding: 6px 14px; border: none; background: white; cursor: pointer; font-size: 13px; }
+        .mode-btn.active { background: #667eea; color: white; }
+    </style>
+</head>
+<body>
+    <!-- 页面头部 -->
+    <div class="header">
+        <h1>菌落与细胞计数分析软件 V1.0</h1>
+        <p>基于 LocateAnything 模型 | 红点=自动检测 | 绿点=手动添加 | Shift+点击删除点</p>
+    </div>
+
+    <!-- Tab 切换 -->
+    <div class="tabs">
+        <button class="tab active" data-tab="colony">菌落计数</button>
+        <button class="tab" data-tab="cell">细胞计数</button>
+    </div>
+
+    <div class="container">
+        <!-- 菌落计数标签页 -->
+        <div id="colony-tab" class="tab-content active">
+            <div class="panel left-panel">
+                <h3>上传图片</h3>
+                <div class="upload-area" id="colony-upload">
+                    <input type="file" id="colony-file" accept="image/*">
+                    <p>点击或拖拽上传图片</p>
+                </div>
+                <div class="controls">
+                    <button class="btn btn-primary" id="colony-count-btn" disabled>开始计数</button>
+                    <button class="btn btn-secondary" id="colony-undo-btn" disabled>撤销</button>
+                    <button class="btn btn-secondary" id="colony-reset-btn" disabled>重置</button>
+                    <button class="btn btn-success" id="colony-export-btn" disabled>导出结果</button>
+                </div>
+                <!-- 参数调节面板，默认折叠 -->
+                <div class="params" id="colony-params">
+                    <details>
+                        <summary style="cursor:pointer;color:#666;">参数调节面板</summary>
+                        <div class="param-group">
+                            <label>稀疏阈值 <span class="param-value" id="colony-sparse-val">50</span></label>
+                            <input type="range" id="colony-sparse" min="5" max="300" value="50" step="1">
+                        </div>
+                        <div class="param-group">
+                            <label>密集阈值 <span class="param-value" id="colony-dense-val">150</span></label>
+                            <input type="range" id="colony-dense" min="20" max="500" value="150" step="1">
+                        </div>
+                        <div class="param-group">
+                            <label>NMS IoU 阈值 <span class="param-value" id="colony-nms-val">0.3</span></label>
+                            <input type="range" id="colony-nms" min="0.1" max="0.9" value="0.3" step="0.01">
+                        </div>
+                        <div class="param-group">
+                            <label>去重距离 (px) <span class="param-value" id="colony-dedup-val">3.0</span></label>
+                            <input type="range" id="colony-dedup" min="1" max="20" value="3" step="0.5">
+                        </div>
+                        <div class="param-group">
+                            <label>CLAHE 对比度限制 <span class="param-value" id="colony-clahe-val">2.0</span></label>
+                            <input type="range" id="colony-clahe" min="0.5" max="10" value="2" step="0.1">
+                        </div>
+                        <div class="param-group">
+                            <label>CLAHE 网格大小 <span class="param-value" id="colony-tile-val">8</span></label>
+                            <input type="range" id="colony-tile" min="2" max="16" value="8" step="1">
+                        </div>
+                        <div class="param-group">
+                            <label>分水岭面积因子 <span class="param-value" id="colony-ws-area-val">2.0</span></label>
+                            <input type="range" id="colony-ws-area" min="0.5" max="5" value="2" step="0.1">
+                        </div>
+                        <div class="param-group">
+                            <label>分水岭距离比 <span class="param-value" id="colony-ws-dist-val">0.3</span></label>
+                            <input type="range" id="colony-ws-dist" min="0.1" max="0.8" value="0.3" step="0.05">
+                        </div>
+                    </details>
+                </div>
+                <!-- 图片信息展示 -->
+                <div id="colony-image-info" style="margin-top:8px;font-size:12px;color:#999;"></div>
+                <div id="colony-info"></div>
+            </div>
+            <div class="panel right-panel">
+                <div class="stats">
+                    <div class="stat-item">
+                        <div class="stat-label">当前数量</div>
+                        <div class="stat-value" id="colony-count">0</div>
+                    </div>
+                </div>
+                <!-- 缩放和模式工具栏 -->
+                <div class="toolbar">
+                    <button class="zoom-btn" id="colony-zoom-out">-</button>
+                    <span class="zoom-level" id="colony-zoom-level">100%</span>
+                    <button class="zoom-btn" id="colony-zoom-in">+</button>
+                    <button class="zoom-btn" id="colony-zoom-fit">&#x2922;</button>
+                    <button class="zoom-btn" id="colony-pan-toggle">&#x2725;</button>
+                </div>
+                <div class="canvas-container" id="colony-canvas-container">
+                    <canvas id="colony-canvas"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- 细胞计数标签页 -->
+        <div id="cell-tab" class="tab-content">
+            <div class="panel left-panel">
+                <h3>上传图片</h3>
+                <div class="upload-area" id="cell-upload">
+                    <input type="file" id="cell-file" accept="image/*">
+                    <p>点击或拖拽上传图片</p>
+                </div>
+                <div class="controls">
+                    <button class="btn btn-primary" id="cell-count-btn" disabled>裁剪并计数</button>
+                    <button class="btn btn-secondary" id="cell-undo-btn" disabled>撤销</button>
+                    <button class="btn btn-secondary" id="cell-reset-btn" disabled>重置</button>
+                    <button class="btn btn-success" id="cell-export-btn" disabled>导出结果</button>
+                </div>
+                <div class="params" id="cell-params">
+                    <details>
+                        <summary style="cursor:pointer;color:#666;">参数调节面板</summary>
+                        <div class="param-group">
+                            <label>NMS IoU 阈值 <span class="param-value" id="cell-nms-val">0.3</span></label>
+                            <input type="range" id="cell-nms" min="0.1" max="0.9" value="0.3" step="0.01">
+                        </div>
+                        <div class="param-group">
+                            <label>温度 <span class="param-value" id="cell-temp-val">0.1</span></label>
+                            <input type="range" id="cell-temp" min="0.0" max="1.0" value="0.1" step="0.1">
+                        </div>
+                        <div class="param-group">
+                            <label>推理模式</label>
+                            <select id="cell-gen-mode" style="width:100%;padding:6px;">
+                                <option value="hybrid" selected>混合模式 (Hybrid)</option>
+                                <option value="fast">快速模式 (MTP)</option>
+                                <option value="slow">精细模式 (NTP)</option>
+                            </select>
+                        </div>
+                    </details>
+                </div>
+                <div id="cell-image-info" style="margin-top:8px;font-size:12px;color:#999;"></div>
+                <div id="cell-info"></div>
+            </div>
+            <div class="panel right-panel">
+                <div class="stats">
+                    <div class="stat-item">
+                        <div class="stat-label">当前数量</div>
+                        <div class="stat-value" id="cell-count">0</div>
+                    </div>
+                </div>
+                <div class="toolbar">
+                    <button class="zoom-btn" id="cell-zoom-out">-</button>
+                    <span class="zoom-level" id="cell-zoom-level">100%</span>
+                    <button class="zoom-btn" id="cell-zoom-in">+</button>
+                    <button class="zoom-btn" id="cell-zoom-fit">&#x2922;</button>
+                    <button class="zoom-btn" id="cell-pan-toggle">&#x2725;</button>
+                    <!-- 细胞特有：标点/框选模式切换 -->
+                    <div class="mode-toggle">
+                        <button class="mode-btn active" id="cell-mode-point" data-mode="point">标点模式</button>
+                        <button class="mode-btn" id="cell-mode-select" data-mode="select">框选模式</button>
+                    </div>
+                </div>
+                <div class="canvas-container" id="cell-canvas-container">
+                    <canvas id="cell-canvas"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 全屏加载遮罩 -->
+    <div class="loading" id="loading">
+        <div style="text-align:center;color:white;">
+            <div class="spinner"></div>
+            <p style="margin-top:16px;" id="loading-text">处理中...</p>
+        </div>
+    </div>
+
+    <script>
+        // API 地址，直接用当前页面的 origin
+        const API_BASE = window.location.origin;
+        // 点击删除时的命中半径（像素）
+        const CLICK_THRESHOLD = 15;
+
+        // 全局状态管理，colony 和 cell 各自独立
+        const state = {
+            colony: {
+                image: null, originalImage: null, points: [], history: [],
+                zoom: 1, panX: 0, panY: 0, isPanning: false, panMode: false,
+                panStart: null, canvas: null, ctx: null, fileName: '',
+            },
+            cell: {
+                image: null, originalImage: null, points: [], history: [],
+                zoom: 1, panX: 0, panY: 0, isPanning: false, panMode: false,
+                panStart: null, selection: null, canvas: null, ctx: null,
+                interactionMode: 'point', fileName: '',
+            }
+        };
+
+        // 用 FileReader 把文件读成 Image 对象
+        function loadImage(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => resolve(img);
+                    img.onerror = reject;
+                    img.src = e.target.result;
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // 显示/隐藏全屏加载遮罩
+        function showLoading(show, text) {
+            document.getElementById('loading').classList.toggle('active', show);
+            if (text) document.getElementById('loading-text').textContent = text;
+        }
+
+        // 在指定 tab 的信息区显示提示
+        function showInfo(type, message) {
+            const infoBox = document.getElementById(`${type}-info`);
+            infoBox.innerHTML = message ? `<div class="info-box">${message}</div>` : '';
+        }
+
+        // 显示错误信息
+        function showError(type, message) {
+            document.getElementById(`${type}-info`).innerHTML = `<div class="error-box">${message}</div>`;
+        }
+
+        // 深拷贝点列表，用于撤销历史
+        function deepCopyPoints(points) { return points.map(p => ({ ...p })); }
+
+        // 把鼠标事件坐标转换成画布坐标（考虑缩放和平移）
+        function getCanvasCoords(e, canvas, zoom, panX, panY) {
+            const rect = canvas.getBoundingClientRect();
+            // canvas 显示尺寸和实际像素可能有差异，需要换算
+            const displayScaleX = canvas.width / rect.width;
+            const displayScaleY = canvas.height / rect.height;
+            const pixelX = (e.clientX - rect.left) * displayScaleX;
+            const pixelY = (e.clientY - rect.top) * displayScaleY;
+            // 减去平移量再除以缩放比例，得到原始图片坐标
+            return { x: (pixelX - panX) / zoom, y: (pixelY - panY) / zoom };
+        }
+
+        // 重绘整个画布：图片 + 标记点 + 框选区域
+        function drawCanvas(type) {
+            const s = state[type];
+            if (!s.image) return;
+            const canvas = s.canvas;
+            const ctx = s.ctx;
+            // 按缩放后的尺寸设置 canvas
+            const baseW = s.image.width * s.zoom;
+            const baseH = s.image.height * s.zoom;
+            canvas.width = baseW;
+            canvas.height = baseH;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.save();
+            // 应用平移偏移
+            ctx.translate(s.panX, s.panY);
+            // 画底图
+            ctx.drawImage(s.image, 0, 0, baseW, baseH);
+
+            // 画标记点
+            s.points.forEach((p) => {
+                const x = p.x * s.zoom;
+                const y = p.y * s.zoom;
+                // 点半径随缩放等比放大，最小 2px
+                const r = Math.max(2, 2 * s.zoom);
+                ctx.beginPath();
+                ctx.arc(x, y, r, 0, Math.PI * 2);
+                // 手动点绿色，自动点红色
+                ctx.fillStyle = p.source === 'manual' ? '#00ff00' : '#ff0000';
+                ctx.fill();
+                // 白色描边增强可见性
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            });
+
+            // 细胞模式下画框选区域
+            if (type === 'cell' && s.selection) {
+                ctx.strokeStyle = '#667eea';
+                ctx.lineWidth = 2;
+                // 虚线矩形表示选择区域
+                ctx.setLineDash([5, 5]);
+                ctx.strokeRect(
+                    s.selection.x1 * s.zoom, s.selection.y1 * s.zoom,
+                    (s.selection.x2 - s.selection.x1) * s.zoom,
+                    (s.selection.y2 - s.selection.y1) * s.zoom
+                );
+                ctx.setLineDash([]);
+            }
+            ctx.restore();
+            // 更新 UI 上的计数和缩放比例
+            document.getElementById(`${type}-count`).textContent = s.points.length;
+            document.getElementById(`${type}-zoom-level`).textContent = Math.round(s.zoom * 100) + '%';
+        }
+
+        // 把原始图片转 base64，用于上传给后端
+        function getImageBase64(type) {
+            const s = state[type];
+            if (!s.originalImage) return null;
+            // 创建临时 canvas 把图片画上去再导出
+            const canvas = document.createElement('canvas');
+            canvas.width = s.originalImage.width;
+            canvas.height = s.originalImage.height;
+            canvas.getContext('2d').drawImage(s.originalImage, 0, 0);
+            // toDataURL 返回 data:image/jpeg;base64,... 格式，取逗号后面的部分
+            return canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
+        }
+
+        // 计算适配容器的缩放比例
+        function computeFitZoom(type) {
+            const s = state[type];
+            if (!s.image) return 1;
+            const container = document.getElementById(`${type}-canvas-container`);
+            // 取宽高缩放比的较小值，且不超过 1（不放大）
+            return Math.min((container.clientWidth - 16) / s.image.width, (container.clientHeight - 16) / s.image.height, 1);
+        }
+
+        // 根据当前状态更新按钮的禁用/启用
+        function updateButtonStates(type) {
+            const s = state[type];
+            const hasImage = !!s.originalImage;
+            const hasPoints = s.points.length > 0;
+            const hasHistory = s.history.length > 0;
+            document.getElementById(`${type}-count-btn`).disabled = !hasImage;
+            document.getElementById(`${type}-undo-btn`).disabled = !hasHistory;
+            document.getElementById(`${type}-reset-btn`).disabled = !hasPoints && !hasHistory;
+            document.getElementById(`${type}-export-btn`).disabled = !hasPoints;
+        }
+
+        // 菌落计数：调用后端 API
+        async function countColony() {
+            const s = state.colony;
+            if (!s.originalImage) return;
+            showLoading(true, '正在进行菌落计数...');
+            // 构造 multipart/form-data 请求体
+            const formData = new FormData();
+            // 把 base64 转成二进制 Blob 再塞进 FormData
+            const b64 = getImageBase64('colony');
+            const binaryStr = atob(b64);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+            formData.append('file', new Blob([bytes], { type: 'image/jpeg' }), 'image.jpg');
+            // 附加算法参数
+            formData.append('sparse_threshold', document.getElementById('colony-sparse').value);
+            formData.append('dense_threshold', document.getElementById('colony-dense').value);
+            formData.append('nms_iou_threshold', document.getElementById('colony-nms').value);
+            formData.append('dedup_distance', document.getElementById('colony-dedup').value);
+            formData.append('clahe_clip_limit', document.getElementById('colony-clahe').value);
+            formData.append('tile_grid_size', document.getElementById('colony-tile').value);
+            formData.append('watershed_area_factor', document.getElementById('colony-ws-area').value);
+            formData.append('watershed_dist_ratio', document.getElementById('colony-ws-dist').value);
+
+            try {
+                const resp = await fetch(`${API_BASE}/api/colony/count`, { method: 'POST', body: formData });
+                const data = await resp.json();
+                if (data.success) {
+                    // 更新点列表并清空历史
+                    s.points = data.points;
+                    s.history = [];
+                    // 重置视图位置
+                    s.panX = 0; s.panY = 0;
+                    // 加载后端返回的可视化图
+                    const img = new Image();
+                    img.onload = () => { s.image = img; drawCanvas('colony'); updateButtonStates('colony'); };
+                    img.src = `data:image/jpeg;base64,${data.image_base64}`;
+                    showInfo('colony', `阶段: ${data.stage} | 原始检测: ${data.raw_count} | 最终计数: ${data.count}`);
+                } else {
+                    showError('colony', data.error);
+                }
+            } catch (e) {
+                showError('colony', `请求失败: ${e.message}`);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // 细胞计数：调用后端 API
+        async function countCell() {
+            const s = state.cell;
+            if (!s.originalImage) return;
+            showLoading(true, '正在进行细胞计数...');
+            const formData = new FormData();
+            // base64 转 Blob
+            const b64 = getImageBase64('cell');
+            const binaryStr = atob(b64);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+            formData.append('file', new Blob([bytes], { type: 'image/jpeg' }), 'image.jpg');
+            // 附加算法参数
+            formData.append('nms_iou_threshold', document.getElementById('cell-nms').value);
+            formData.append('temperature', document.getElementById('cell-temp').value);
+            formData.append('generation_mode', document.getElementById('cell-gen-mode').value);
+            // 如果有框选区域，把坐标也传过去
+            if (s.selection) {
+                formData.append('x1', s.selection.x1);
+                formData.append('y1', s.selection.y1);
+                formData.append('x2', s.selection.x2);
+                formData.append('y2', s.selection.y2);
+            }
+            try {
+                const resp = await fetch(`${API_BASE}/api/cell/count`, { method: 'POST', body: formData });
+                const data = await resp.json();
+                if (data.success) {
+                    s.points = data.points;
+                    s.history = [];
+                    // 计数完成后清除选择框
+                    s.selection = null;
+                    s.panX = 0; s.panY = 0;
+                    const img = new Image();
+                    img.onload = () => { s.image = img; drawCanvas('cell'); updateButtonStates('cell'); };
+                    img.src = `data:image/jpeg;base64,${data.image_base64}`;
+                    showInfo('cell', `${data.crop_info} | 原始检测: ${data.raw_count} | 最终计数: ${data.count}`);
+                } else {
+                    showError('cell', data.error);
+                }
+            } catch (e) {
+                showError('cell', `请求失败: ${e.message}`);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // 导出计数结果为 CSV 文件
+        function exportResults(type) {
+            const s = state[type];
+            if (!s.points.length) return;
+            const label = type === 'colony' ? '菌落' : '细胞';
+            // BOM 头让 Excel 正确识别 UTF-8
+            let csv = '\uFEFF序号,X,Y,类型\n';
+            // 逐行写入每个点的信息
+            s.points.forEach((p, i) => {
+                csv += `${i + 1},${p.x.toFixed(1)},${p.y.toFixed(1)},${p.source === 'manual' ? '手动' : '自动'}\n`;
+            });
+            // 末尾加总计行
+            csv += `\n总计,${s.points.length}\n`;
+            // 创建 Blob 并触发下载
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${label}_计数结果_${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // 初始化指定 tab 的所有交互逻辑
+        function setupType(type) {
+            const s = state[type];
+            const uploadArea = document.getElementById(`${type}-upload`);
+            const fileInput = document.getElementById(`${type}-file`);
+            const canvas = document.getElementById(`${type}-canvas`);
+            const container = document.getElementById(`${type}-canvas-container`);
+            const panToggle = document.getElementById(`${type}-pan-toggle`);
+
+            // 保存 canvas 引用
+            s.canvas = canvas;
+            s.ctx = canvas.getContext('2d');
+
+            // 点击上传区域触发文件选择
+            uploadArea.addEventListener('click', () => fileInput.click());
+            // 支持拖拽上传
+            uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); });
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                if (e.dataTransfer.files.length) {
+                    fileInput.files = e.dataTransfer.files;
+                    fileInput.dispatchEvent(new Event('change'));
+                }
+            });
+
+            // 文件选择后加载图片
+            fileInput.addEventListener('change', async (e) => {
+                if (e.target.files.length) {
+                    const file = e.target.files[0];
+                    const img = await loadImage(file);
+                    // 初始化状态
+                    s.originalImage = img;
+                    s.image = img;
+                    s.points = [];
+                    s.history = [];
+                    s.zoom = 1; s.panX = 0; s.panY = 0;
+                    s.selection = null;
+                    s.fileName = file.name;
+                    // 首次绘制
+                    drawCanvas(type);
+                    updateButtonStates(type);
+                    // 更新上传区域显示文件名
+                    uploadArea.classList.add('has-file');
+                    uploadArea.querySelector('p').textContent = file.name;
+                    document.getElementById(`${type}-image-info`).textContent = `${img.width} x ${img.height} px`;
+                }
+            });
+
+            // 鼠标交互相关的局部变量
+            let mouseDownTime = 0;
+            let didPan = false;
+            let isSelecting = false;
+            let selectStart = null;
+
+            // 鼠标按下：区分平移、框选、点击三种操作
+            canvas.addEventListener('mousedown', (e) => {
+                if (!s.image) return;
+                e.preventDefault();
+                // 平移模式或中键按下，进入平移
+                if (s.panMode || e.button === 1) {
+                    s.isPanning = true;
+                    didPan = false;
+                    s.panStart = { x: e.clientX, y: e.clientY, scrollLeft: container.scrollLeft, scrollTop: container.scrollTop };
+                    return;
+                }
+                // 细胞框选模式下左键拖拽画选择框
+                if (type === 'cell' && s.interactionMode === 'select' && e.button === 0) {
+                    isSelecting = true;
+                    const coords = getCanvasCoords(e, canvas, s.zoom, s.panX, s.panY);
+                    selectStart = coords;
+                    s.selection = { x1: coords.x, y1: coords.y, x2: coords.x, y2: coords.y };
+                    return;
+                }
+                // 普通点击，记录时间用于区分点击和长按
+                mouseDownTime = Date.now();
+                didPan = false;
+            });
+
+            // 鼠标移动：处理平移和框选的实时更新
+            canvas.addEventListener('mousemove', (e) => {
+                if (s.isPanning && s.panStart) {
+                    const dx = e.clientX - s.panStart.x;
+                    const dy = e.clientY - s.panStart.y;
+                    // 移动超过 2px 才算真正平移，避免误判
+                    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) didPan = true;
+                    // 通过滚动容器实现平移效果
+                    container.scrollLeft = s.panStart.scrollLeft - dx;
+                    container.scrollTop = s.panStart.scrollTop - dy;
+                    return;
+                }
+                if (isSelecting && selectStart) {
+                    // 实时更新选择框的右下角坐标
+                    const coords = getCanvasCoords(e, canvas, s.zoom, s.panX, s.panY);
+                    s.selection = {
+                        x1: Math.min(selectStart.x, coords.x),
+                        y1: Math.min(selectStart.y, coords.y),
+                        x2: Math.max(selectStart.x, coords.x),
+                        y2: Math.max(selectStart.y, coords.y),
+                    };
+                    drawCanvas(type);
+                }
+            });
+
+            // 鼠标释放：处理平移结束、框选确认、添加/删除点
+            canvas.addEventListener('mouseup', (e) => {
+                if (s.isPanning) { s.isPanning = false; s.panStart = null; return; }
+                if (isSelecting) {
+                    isSelecting = false;
+                    selectStart = null;
+                    // 选择框太小就忽略
+                    if (s.selection) {
+                        const w = Math.abs(s.selection.x2 - s.selection.x1);
+                        const h = Math.abs(s.selection.y2 - s.selection.y1);
+                        if (w < 5 || h < 5) s.selection = null;
+                    }
+                    drawCanvas(type);
+                    return;
+                }
+                // 如果发生了平移或长按，不算点击
+                if (!s.image || didPan) return;
+                if (Date.now() - mouseDownTime > 500) return;
+                // 计算点击位置对应的图片坐标
+                const coords = getCanvasCoords(e, canvas, s.zoom, s.panX, s.panY);
+                const { x, y } = coords;
+                if (e.shiftKey) {
+                    // Shift+点击：删除最近的点
+                    for (let i = 0; i < s.points.length; i++) {
+                        const p = s.points[i];
+                        // 命中半径随缩放调整
+                        const threshold = CLICK_THRESHOLD / s.zoom;
+                        if ((p.x - x) ** 2 + (p.y - y) ** 2 < threshold ** 2) {
+                            // 删除前保存历史，支持撤销
+                            s.history.push(deepCopyPoints(s.points));
+                            s.points.splice(i, 1);
+                            drawCanvas(type);
+                            updateButtonStates(type);
+                            return;
+                        }
+                    }
+                } else {
+                    // 普通点击：添加手动标记点
+                    s.history.push(deepCopyPoints(s.points));
+                    s.points.push({ x, y, source: 'manual' });
+                    drawCanvas(type);
+                    updateButtonStates(type);
+                }
+            });
+
+            // Ctrl+滚轮缩放
+            container.addEventListener('wheel', (e) => {
+                if (!s.image || (!e.ctrlKey && !e.metaKey)) return;
+                e.preventDefault();
+                const rect = canvas.getBoundingClientRect();
+                // 计算鼠标在 canvas 上的实际像素位置
+                const mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+                const mouseY = (e.clientY - rect.top) * (canvas.height / rect.height);
+                const oldZoom = s.zoom;
+                // 向上滚放大，向下滚缩小
+                const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+                // 限制缩放范围 0.1x ~ 10x
+                s.zoom = Math.max(0.1, Math.min(s.zoom * factor, 10));
+                // 以鼠标位置为中心缩放：调整平移量使鼠标下的内容不动
+                const scale = s.zoom / oldZoom;
+                s.panX = mouseX - (mouseX - s.panX) * scale;
+                s.panY = mouseY - (mouseY - s.panY) * scale;
+                drawCanvas(type);
+            }, { passive: false });
+
+            // 平移模式开关
+            panToggle.addEventListener('click', () => {
+                s.panMode = !s.panMode;
+                panToggle.style.background = s.panMode ? '#667eea' : 'white';
+                panToggle.style.color = s.panMode ? 'white' : '#333';
+            });
+
+            // 绑定按钮事件
+            document.getElementById(`${type}-count-btn`).addEventListener('click', () => type === 'colony' ? countColony() : countCell());
+            document.getElementById(`${type}-export-btn`).addEventListener('click', () => exportResults(type));
+            // 撤销：恢复上一步的点列表
+            document.getElementById(`${type}-undo-btn`).addEventListener('click', () => {
+                if (s.history.length) { s.points = s.history.pop(); drawCanvas(type); updateButtonStates(type); }
+            });
+            // 重置：恢复原图，清除所有标记
+            document.getElementById(`${type}-reset-btn`).addEventListener('click', () => {
+                s.image = s.originalImage; s.points = []; s.history = []; s.selection = null;
+                s.zoom = 1; s.panX = 0; s.panY = 0;
+                drawCanvas(type); updateButtonStates(type);
+            });
+            // 缩放按钮
+            document.getElementById(`${type}-zoom-in`).addEventListener('click', () => { s.zoom = Math.min(s.zoom * 1.2, 10); drawCanvas(type); });
+            document.getElementById(`${type}-zoom-out`).addEventListener('click', () => { s.zoom = Math.max(s.zoom / 1.2, 0.1); drawCanvas(type); });
+            // 适配窗口
+            document.getElementById(`${type}-zoom-fit`).addEventListener('click', () => {
+                if (s.image) { s.zoom = computeFitZoom(type); s.panX = 0; s.panY = 0; drawCanvas(type); }
+            });
+        }
+
+        // 滑块拖动时实时更新数值显示
+        document.querySelectorAll('input[type="range"]').forEach(input => {
+            input.addEventListener('input', () => {
+                const valEl = document.getElementById(`${input.id}-val`);
+                if (valEl) valEl.textContent = input.value;
+            });
+        });
+
+        // 细胞模式切换：标点/框选
+        document.querySelectorAll('.mode-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                // 更新按钮激活状态
+                btn.parentElement.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                state.cell.interactionMode = btn.dataset.mode;
+            });
+        });
+
+        // Tab 切换逻辑
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                // 更新 tab 激活状态
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                // 切换对应内容面板
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                document.getElementById(`${tab.dataset.tab}-tab`).classList.add('active');
+            });
+        });
+
+        // 初始化两个 tab
+        setupType('colony');
+        setupType('cell');
+    </script>
+</body>
+</html>
+
+
+第三部分：菌落自适应计数算法
+
+"""
+colony_count_adaptive.py
+
+核心思路是两阶段处理：
+  第一阶段：在原图上做一次粗定位，拿到初步检测结果
+  第二阶段：根据初步检测的数量，选择不同的策略
+     稀疏（数量少）：直接用粗定位结果
+     中等：用 CLAHE 增强后再检测一次，去重
+     密集：用 CLAHE 增强后检测，再用分水岭分割粘连区域
+     退化情况：如果模型只返回了一个覆盖全图的大框，用传统分水岭
+"""
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+import cv2
+import numpy as np
+import torch
+from PIL import Image, ImageDraw, ImageFont
+
+# 添加 Eagle/Embodied 到路径，导入模型 worker
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "Eagle", "Embodied"))
+from locateanything_worker import LocateAnythingWorker
+
+# 支持的图片扩展名
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
+
+
+def preprocess_image(
+    image: Image.Image,
+    output_path: str = None,
+    clahe_clip_limit: float = 2.0,
+    tile_grid_size: int = 8,
+) -> Image.Image:
+    """
+    在 LAB 颜色空间做 CLAHE 增强，保持颜色不变。
+    CLAHE（对比度受限的自适应直方图均衡化）对于菌落这种
+    大小不一、对比度差异大的目标十分有效。
+    """
+    img_np = np.array(image)
+    # 灰度图转成三通道，统一处理
+    if len(img_np.shape) == 3:
+        rgb = img_np.copy()
+    else:
+        rgb = cv2.cvtColor(img_np, cv2.COLOR_GRAY2RGB)
+
+    # 创建 CLAHE 对象，clipLimit 控制增强强度
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip_limit, tileGridSize=(tile_grid_size, tile_grid_size))
+
+    # 转 LAB 空间，只对亮度通道 L 做增强，不改变颜色
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    l_enhanced = clahe.apply(l)
+    lab_enhanced = cv2.merge([l_enhanced, a, b])
+    result_rgb = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2RGB)
+    result = Image.fromarray(result_rgb)
+
+    # 可选：保存增强后的图片用于调试
+    if output_path:
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        result.save(output_path)
+
+    return result
+
+
+def nms(boxes: list[dict], iou_threshold: float = 0.3) -> list[dict]:
+    """
+    非极大值抑制，去除重叠框。
+    按面积从大到小排序，重叠太多的就丢掉。
+    """
+    if not boxes:
+        return []
+
+    # 预计算每个框的面积
+    for box in boxes:
+        box["area"] = (box["x2"] - box["x1"]) * (box["y2"] - box["y1"])
+
+    # 面积大的优先保留
+    boxes = sorted(boxes, key=lambda b: b["area"], reverse=True)
+    keep = []
+    while boxes:
+        # 取出当前最大的框
+        current = boxes.pop(0)
+        keep.append(current)
+        # 过滤掉与当前框 IoU 超标的框
+        filtered = []
+        for box in boxes:
+            # 计算交集区域
+            x1 = max(current["x1"], box["x1"])
+            y1 = max(current["y1"], box["y1"])
+            x2 = min(current["x2"], box["x2"])
+            y2 = min(current["y2"], box["y2"])
+            inter_area = max(0, x2 - x1) * max(0, y2 - y1)
+            # 计算 IoU
+            union_area = current["area"] + box["area"] - inter_area
+            iou = inter_area / union_area if union_area > 0 else 0
+            # IoU 低于阈值的保留
+            if iou < iou_threshold:
+                filtered.append(box)
+        boxes = filtered
+    return keep
+
+
+def parse_boxes(answer: str, image_width: int, image_height: int) -> list[dict]:
+    """
+    解析模型输出的 <box><x1><y1><x2><y2></box> 格式。
+    模型输出是归一化的 0-1000 坐标，这里转回像素坐标。
+    """
+    boxes = []
+    # 用正则提取所有 box 标签
+    for m in re.finditer(r"<box><(\d+)><(\d+)><(\d+)><(\d+)></box>", answer):
+        x1, y1, x2, y2 = [int(g) for g in m.groups()]
+        # 归一化坐标转像素坐标
+        px1, py1 = x1 / 1000 * image_width, y1 / 1000 * image_height
+        px2, py2 = x2 / 1000 * image_width, y2 / 1000 * image_height
+        boxes.append({
+            "x1": min(px1, px2),
+            "y1": min(py1, py2),
+            "x2": max(px1, px2),
+            "y2": max(py1, py2),
+        })
+    return boxes
+
+
+def dedup_by_center_distance(boxes: list[dict], distance_threshold: float = 3.0) -> list[dict]:
+    """
+    按中心点距离去重。
+    对于密集的菌落，IoU 的 NMS 太激进，
+    这里用中心点距离判断，更温和一些。
+    """
+    if not boxes:
+        return []
+
+    # 统一中心点字段名
+    for b in boxes:
+        if "center_x" in b and "center_y" in b:
+            b["cx"] = b["center_x"]
+            b["cy"] = b["center_y"]
+        else:
+            b["cx"] = (b["x1"] + b["x2"]) / 2
+            b["cy"] = (b["y1"] + b["y2"]) / 2
+    # 面积大的优先保留
+    boxes = sorted(boxes, key=lambda b: (b["x2"] - b["x1"]) * (b["y2"] - b["y1"]), reverse=True)
+    keep = []
+    for b in boxes:
+        duplicate = False
+        # 检查是否与已保留的点太近
+        for k in keep:
+            d = ((b["cx"] - k["cx"]) ** 2 + (b["cy"] - k["cy"]) ** 2) ** 0.5
+            if d < distance_threshold:
+                duplicate = True
+                break
+        if not duplicate:
+            keep.append(b)
+    # 清理临时字段
+    for b in keep:
+        b.pop("cx", None)
+        b.pop("cy", None)
+    return keep
+
+
+def _compute_region_centroid(image: Image.Image, box: dict) -> tuple[float, float]:
+    """
+    计算区域内接矩形的质心。
+    用图像矩来做，比直接用框的中心更准。
+    """
+    img_np = np.array(image)
+    if len(img_np.shape) == 2:
+        img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2RGB)
+
+    img_width, img_height = image.size
+    # 裁剪坐标取整并限制在图片范围内
+    x1 = max(0, int(box["x1"]))
+    y1 = max(0, int(box["y1"]))
+    x2 = min(img_width, int(box["x2"]))
+    y2 = min(img_height, int(box["y2"]))
+
+    # 区域太小就直接返回框中心
+    if x2 - x1 < 2 or y2 - y1 < 2:
+        return (box["x1"] + box["x2"]) / 2, (box["y1"] + box["y2"]) / 2
+    region = img_np[y1:y2, x1:x2]
+    gray = cv2.cvtColor(region, cv2.COLOR_RGB2GRAY)
+    try:
+        # Otsu 自适应二值化，取反让目标为白色
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        # 用图像矩计算质心
+        m = cv2.moments(binary)
+        if m["m00"] > 0:
+            cx_rel = m["m10"] / m["m00"]
+            cy_rel = m["m01"] / m["m00"]
+            # 相对坐标转绝对坐标
+            return float(x1 + cx_rel), float(y1 + cy_rel)
+    except Exception:
+        pass
+    # 计算失败就退回框中心
+    return (box["x1"] + box["x2"]) / 2, (box["y1"] + box["y2"]) / 2
+
+
+def watershed_split_large_boxes(
+    image: Image.Image,
+    boxes: list[dict],
+    area_factor: float = 2.0,
+    min_split_area_ratio: float = 0.0005,
+    dist_threshold_ratio: float = 0.3,
+) -> list[dict]:
+    """
+    用分水岭算法分割大的/粘连的检测框。
+    如果某个框的面积明显比中位数大很多，认为里面可能包含多个菌落，
+    对这个框做距离变换 + 分水岭，拆分成多个子框。
+    """
+    if not boxes:
+        return boxes
+
+    img_np = np.array(image)
+    if len(img_np.shape) == 2:
+        img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2RGB)
+
+    img_width, img_height = image.size
+    img_area = img_width * img_height
+
+    # 计算每个框的面积
+    for box in boxes:
+        box["area"] = (box["x2"] - box["x1"]) * (box["y2"] - box["y1"])
+    areas = [b["area"] for b in boxes]
+    # 取中位数作为正常菌落大小的参考
+    median_area = sorted(areas)[len(areas) // 2] if areas else 0
+
+    result_boxes = []
+    for box in boxes:
+        # 面积超过中位数 area_factor 倍的认为是大框
+        is_large = box["area"] > area_factor * median_area and box["area"] > median_area * 1.5
+
+        if not is_large:
+            # 正常大小的框直接算质心
+            cx, cy = _compute_region_centroid(image, box)
+            box["center_x"] = cx
+            box["center_y"] = cy
+            result_boxes.append(box)
+            continue
+
+        # 裁剪区域，加一点 padding 防止边界截断
+        pad = 5
+        x1 = max(0, int(box["x1"]) - pad)
+        y1 = max(0, int(box["y1"]) - pad)
+        x2 = min(img_width, int(box["x2"]) + pad)
+        y2 = min(img_height, int(box["y2"]) + pad)
+
+        # 区域太小不做分割
+        if x2 - x1 < 10 or y2 - y1 < 10:
+            cx, cy = _compute_region_centroid(image, box)
+            box["center_x"] = cx
+            box["center_y"] = cy
+            result_boxes.append(box)
+            continue
+        region = img_np[y1:y2, x1:x2]
+        gray = cv2.cvtColor(region, cv2.COLOR_RGB2GRAY)
+
+        # 先做 CLAHE 增强提高对比度
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        # Otsu 二值化，取反让菌落为白色
+        _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+        # 形态学操作：开运算去噪点，闭运算填孔洞
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+        # 距离变换：每个像素到最近背景的距离
+        dist_transform = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+        dist_max = dist_transform.max() if dist_transform.max() > 0 else 1
+        # 取距离变换值大于阈值的区域作为确定前景
+        _, sure_fg = cv2.threshold(dist_transform, dist_threshold_ratio * dist_max, 255, 0)
+        sure_fg = np.uint8(sure_fg)
+
+        # 膨胀得到确定背景
+        sure_bg = cv2.dilate(binary, kernel, iterations=3)
+        # 确定背景减确定前景 = 未知区域
+        unknown = cv2.subtract(sure_bg, sure_fg)
+
+        # 连通分量标记作为分水岭的种子
+        num_labels, markers = cv2.connectedComponents(sure_fg)
+        # 标签从 1 开始，0 留给未知区域
+        markers = markers + 1
+        markers[unknown == 255] = 0
+
+        region_bgr = cv2.cvtColor(region, cv2.COLOR_RGB2BGR)
+        # 执行分水岭分割
+        markers = cv2.watershed(region_bgr, markers)
+
+        # 从分水岭结果提取子框
+        min_sub_area = img_area * min_split_area_ratio
+        sub_boxes = []
+        for label in range(2, num_labels + 1):
+            mask = (markers == label).astype(np.uint8)
+            if mask.sum() == 0:
+                continue
+            ys, xs = np.where(mask > 0)
+            if len(ys) == 0:
+                continue
+            # 计算子框边界
+            sx1, sx2 = xs.min(), xs.max()
+            sy1, sy2 = ys.min(), ys.max()
+            sub_area = (sx2 - sx1) * (sy2 - sy1)
+            # 太小的碎片忽略
+            if sub_area < min_sub_area:
+                continue
+
+            # 用图像矩算质心
+            m = cv2.moments(mask)
+            if m["m00"] > 0:
+                cx_rel = m["m10"] / m["m00"]
+                cy_rel = m["m01"] / m["m00"]
+            else:
+                cx_rel = (sx1 + sx2) / 2
+                cy_rel = (sy1 + sy2) / 2
+
+            sub_boxes.append({
+                "x1": float(x1 + sx1),
+                "y1": float(y1 + sy1),
+                "x2": float(x1 + sx2),
+                "y2": float(y1 + sy2),
+                "area": float(sub_area),
+                "center_x": float(x1 + cx_rel),
+                "center_y": float(y1 + cy_rel),
+            })
+
+        if sub_boxes:
+            print(f"    Watershed: split 1 large box (area={box['area']:.0f}) into {len(sub_boxes)} sub-boxes")
+            result_boxes.extend(sub_boxes)
+        else:
+            # 分割失败就保留原框
+            cx, cy = _compute_region_centroid(image, box)
+            box["center_x"] = cx
+            box["center_y"] = cy
+            result_boxes.append(box)
+    return result_boxes
+
+
+def full_image_watershed(
+    image: Image.Image,
+    clahe_clip_limit: float = 2.0,
+    dist_threshold_ratio: float = 0.3,
+    min_area_ratio: float = 0.0005,
+) -> list[dict]:
+    """
+    全图分水岭，当模型只返回一个覆盖全图的大框时的回退方案。
+    直接用传统 CV 方法：CLAHE + Otsu + 距离变换 + 分水岭。
+    """
+    img_np = np.array(image)
+    if len(img_np.shape) == 2:
+        img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2RGB)
+
+    img_width, img_height = image.size
+    img_area = img_width * img_height
+
+    # 转灰度 + CLAHE 增强
+    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip_limit, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    # Otsu 二值化
+    _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+    # 形态学去噪
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    # 距离变换 + 确定前景
+    dist_transform = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+    dist_max = dist_transform.max() if dist_transform.max() > 0 else 1
+    _, sure_fg = cv2.threshold(dist_transform, dist_threshold_ratio * dist_max, 255, 0)
+    sure_fg = np.uint8(sure_fg)
+    # 确定背景
+    sure_bg = cv2.dilate(binary, kernel, iterations=3)
+    unknown = cv2.subtract(sure_bg, sure_fg)
+    # 连通分量作为种子
+    num_labels, markers = cv2.connectedComponents(sure_fg)
+    markers = markers + 1
+    markers[unknown == 255] = 0
+    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+    # 分水岭分割
+    markers = cv2.watershed(img_bgr, markers)
+    min_area = img_area * min_area_ratio
+    boxes = []
+
+    # 提取每个分割区域
+    for label in range(2, num_labels + 1):
+        mask = (markers == label).astype(np.uint8)
+        if mask.sum() == 0:
+            continue
+        ys, xs = np.where(mask > 0)
+        if len(ys) == 0:
+            continue
+        sx1, sx2 = xs.min(), xs.max()
+        sy1, sy2 = ys.min(), ys.max()
+        sub_area = (sx2 - sx1) * (sy2 - sy1)
+        # 面积太小的过滤掉
+        if sub_area < min_area:
+            continue
+        # 计算质心
+        m = cv2.moments(mask)
+        if m["m00"] > 0:
+            cx = m["m10"] / m["m00"]
+            cy = m["m01"] / m["m00"]
+        else:
+            cx = (sx1 + sx2) / 2
+            cy = (sy1 + sy2) / 2
+        boxes.append({
+            "x1": float(sx1),
+            "y1": float(sy1),
+            "x2": float(sx2),
+            "y2": float(sy2),
+            "area": float(sub_area),
+            "center_x": float(cx),
+            "center_y": float(cy),
+        })
+    print(f"[Full-image watershed] Detected {len(boxes)} regions")
+    return boxes
+
+
+# 菌落检测用的增强版提示词
+# 比通用 prompt 多了对菌落形态、颜色、边缘情况的描述
+ENHANCED_PROMPT = (
+    "Locate all the instances that match the following description: colony. "
+    "These appear as circular, oval, or semi-circular spots of varying sizes on the agar surface. "
+    "Colonies may be white, yellow, or other colors and have varying contrast with the background. "
+    "When colonies are crowded or touching, they may be deformed, squeezed into "
+    "ellipses or half-circles. Even if colonies are touching or overlapping, "
+    "each colony must be enclosed in a SEPARATE bounding box. "
+    "Do NOT group multiple colonies into one large box. "
+    "Each bounding box should tightly enclose a single colony without extra background. "
+    "Count ALL visible colonies including those near or touching the edge of the petri dish - "
+    "partial colonies at the boundary should also be counted."
+)
+
+
+class AdaptiveColonyCounter:
+    """两阶段自适应菌落计数器"""
+
+    def __init__(self, model_path: str = None, device: str = "cuda", dtype=torch.bfloat16, worker=None):
+        self.device = device
+        self.dtype = dtype
+
+        # 支持外部传入已加载的 worker，实现模型共享
+        if worker is not None:
+            self.worker = worker
+            print("Using shared LocateAnythingWorker instance.")
+        else:
+            if model_path is None:
+                raise ValueError("model_path is required when worker is not provided.")
+            print(f"Loading model from: {model_path}")
+            print(f"Using device: {device}")
+            self.worker = LocateAnythingWorker(
+                model_path=model_path,
+                device=device,
+                dtype=dtype,
+            )
+            print("Model loaded successfully.")
+
+    @staticmethod
+    def _boxes_to_centers(boxes: list[dict]) -> list[dict]:
+        """把边界框转成中心点"""
+        centers = []
+        for box in boxes:
+            # 优先用已计算好的质心
+            if "center_x" in box and "center_y" in box:
+                centers.append({"x": box["center_x"], "y": box["center_y"]})
+            else:
+                # 否则用框的几何中心
+                centers.append({
+                    "x": (box["x1"] + box["x2"]) / 2,
+                    "y": (box["y1"] + box["y2"]) / 2,
+                })
+        return centers
+
+    def count_colonies_adaptive(
+        self,
+        image: Image.Image,
+        sparse_threshold: int = 50,
+        dense_threshold: int = 150,
+        nms_iou_threshold: float = 0.3,
+        dedup_distance: float = 3.0,
+        clahe_clip_limit: float = 2.0,
+        tile_grid_size: int = 8,
+        watershed_area_factor: float = 2.0,
+        watershed_dist_ratio: float = 0.3,
+        watershed_min_area_ratio: float = 0.0005,
+        verbose: bool = True,
+    ) -> dict:
+        """
+        两阶段自适应菌落计数。
+        返回 dict 包含：count, raw_count, stage, boxes, centers, answer
+        """
+        image_width, image_height = image.size
+        # 第一阶段：在原图上粗定位
+        print("\n[Stage 1] Coarse locate on original image...")
+        result = self.worker.predict(image, ENHANCED_PROMPT, verbose=verbose)
+        coarse_answer = result["answer"]
+        # 解析模型输出并做 NMS
+        boxes = parse_boxes(coarse_answer, image_width, image_height)
+        boxes = nms(boxes, nms_iou_threshold)
+        n_raw = len(boxes)
+        print(f"[Stage 1] Raw count (after NMS): {n_raw}")
+
+        # 检测是否退化成了全图框（模型没找到目标时会返回一个大框）
+        full_image_box = False
+        if n_raw == 1:
+            b = boxes[0]
+            box_area = (b["x2"] - b["x1"]) * (b["y2"] - b["y1"])
+            img_area = image_width * image_height
+            # 覆盖超过 80% 图片面积就认为是全图框
+            if box_area > 0.8 * img_area:
+                full_image_box = True
+                print(
+                    f"[Stage 1] WARNING: single full-image box detected "
+                    f"(coverage={box_area/img_area:.1%}) → full-image watershed fallback"
+                )
+
+        # 第二阶段：根据密度选择策略
+        if full_image_box:
+            # 全图框：先尝试 CLAHE 增强后重新检测
+            stage = "full_image_box_relocate"
+            print(f"[Stage 2] Full-image box detected → CLAHE + re-locate")
+            processed = preprocess_image(
+                image,
+                clahe_clip_limit=clahe_clip_limit,
+                tile_grid_size=tile_grid_size,
+            )
+            if processed.mode != "RGB":
+                processed = processed.convert("RGB")
+
+            result2 = self.worker.predict(processed, ENHANCED_PROMPT, verbose=verbose)
+            final_answer = result2["answer"]
+            boxes2 = parse_boxes(final_answer, image_width, image_height)
+            boxes2 = nms(boxes2, nms_iou_threshold)
+
+            # 如果还是全图框，就用传统分水岭
+            still_full = False
+            if len(boxes2) == 1:
+                b = boxes2[0]
+                box_area = (b["x2"] - b["x1"]) * (b["y2"] - b["y1"])
+                if box_area > 0.8 * image_width * image_height:
+                    still_full = True
+            if still_full:
+                stage = "full_image_watershed"
+                print(f"[Stage 2] Re-locate still full-image box → full-image watershed fallback")
+                final_boxes = full_image_watershed(
+                    image,
+                    clahe_clip_limit=clahe_clip_limit,
+                    dist_threshold_ratio=watershed_dist_ratio,
+                    min_area_ratio=watershed_min_area_ratio,
+                )
+            else:
+                # 重新检测成功，计算质心并去重
+                for box in boxes2:
+                    cx, cy = _compute_region_centroid(image, box)
+                    box["center_x"] = cx
+                    box["center_y"] = cy
+                final_boxes = dedup_by_center_distance(boxes2, dedup_distance)
+        elif n_raw < sparse_threshold:
+            # 稀疏：直接用粗定位结果，不再做额外处理
+            stage = "sparse"
+            print(f"[Stage 2] Density=sparse ({n_raw} < {sparse_threshold}) → reuse stage-1 result")
+            final_boxes = []
+            for box in boxes:
+                cx, cy = _compute_region_centroid(image, box)
+                box["center_x"] = cx
+                box["center_y"] = cy
+                final_boxes.append(box)
+            final_answer = coarse_answer
+        elif n_raw < dense_threshold:
+            # 中等密度：CLAHE 增强后再检测一次，提高召回率
+            stage = "medium"
+            print(f"[Stage 2] Density=medium ({sparse_threshold} ≤ {n_raw} < {dense_threshold})")
+            processed = preprocess_image(
+                image,
+                clahe_clip_limit=clahe_clip_limit,
+                tile_grid_size=tile_grid_size,
+            )
+            if processed.mode != "RGB":
+                processed = processed.convert("RGB")
+
+            result2 = self.worker.predict(processed, ENHANCED_PROMPT, verbose=verbose)
+            final_answer = result2["answer"]
+            boxes2 = parse_boxes(final_answer, image_width, image_height)
+
+            # 计算每个框的质心
+            for box in boxes2:
+                cx, cy = _compute_region_centroid(image, box)
+                box["center_x"] = cx
+                box["center_y"] = cy
+
+            # 用中心点距离去重，比 NMS 更温和
+            final_boxes = dedup_by_center_distance(boxes2, dedup_distance)
+        else:
+            # 密集：CLAHE + 分水岭分割粘连区域 + 去重
+            stage = "dense"
+            print(f"[Stage 2] Density=dense ({n_raw} ≥ {dense_threshold}) → CLAHE + watershed + dedup")
+            processed = preprocess_image(
+                image,
+                clahe_clip_limit=clahe_clip_limit,
+                tile_grid_size=tile_grid_size,
+            )
+            if processed.mode != "RGB":
+                processed = processed.convert("RGB")
+
+            result2 = self.worker.predict(processed, ENHANCED_PROMPT, verbose=verbose)
+            final_answer = result2["answer"]
+            boxes2 = parse_boxes(final_answer, image_width, image_height)
+            # 分水岭分割大框
+            before_split = len(boxes2)
+            boxes2 = watershed_split_large_boxes(
+                image,
+                boxes2,
+                area_factor=watershed_area_factor,
+                min_split_area_ratio=watershed_min_area_ratio,
+                dist_threshold_ratio=watershed_dist_ratio,
+            )
+            print(f"[Stage 2] Watershed: {before_split} → {len(boxes2)} boxes")
+            # 最终去重
+            final_boxes = dedup_by_center_distance(boxes2, dedup_distance)
+        # 转成中心点列表
+        centers = self._boxes_to_centers(final_boxes)
+        return {
+            "count": len(final_boxes),
+            "raw_count": n_raw,
+            "stage": stage,
+            "boxes": final_boxes,
+            "centers": centers,
+            "answer": final_answer,
+            "coarse_answer": coarse_answer,
+        }
+
+
+def visualize_centers(image: Image.Image, result: dict, output_path: str):
+    """只画菌落中心点和计数文字"""
+    draw_image = image.copy()
+    draw = ImageDraw.Draw(draw_image)
+    centers = result.get("centers", [])
+    count = result.get("count", 0)
+
+    # 画每个中心点
+    for c in centers:
+        cx, cy = c["x"], c["y"]
+        radius = 2
+        draw.ellipse(
+            [(cx - radius, cy - radius), (cx + radius, cy + radius)],
+            fill="red",
+            outline="white",
+            width=1,
+        )
+    # 加载字体
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24)
+    except (IOError, OSError):
+        font = ImageFont.load_default()
+
+    # 画计数文字背景框
+    count_text = f"Colony Count: {count}"
+    bbox = draw.textbbox((0, 0), count_text, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    margin = 5
+    draw.rectangle(
+        [(margin, margin), (margin + text_width + margin * 2, margin + text_height + margin * 2)],
+        fill="white",
+    )
+    draw.text((margin * 2, margin), count_text, fill="black", font=font)
+
+    draw_image.save(output_path)
+    print(f"Visualization saved to: {output_path}")
+
+
+def process_single_image(counter: AdaptiveColonyCounter, image_path: str, output_dir: str, **kwargs) -> dict:
+    """处理单张图片"""
+    print(f"\nProcessing: {image_path}")
+    image = Image.open(image_path).convert("RGB")
+    result = counter.count_colonies_adaptive(image, **kwargs)
+
+    # 保存原图、可视化图和 JSON 结果
+    os.makedirs(output_dir, exist_ok=True)
+    base_name = Path(image_path).stem
+    image.save(os.path.join(output_dir, f"{base_name}_original.png"))
+    visualize_centers(image, result, os.path.join(output_dir, f"{base_name}_visualization.png"))
+
+    result_data = {
+        "image_path": image_path,
+        "count": result["count"],
+        "raw_count": result["raw_count"],
+        "stage": result["stage"],
+        "boxes": result["boxes"],
+        "centers": result["centers"],
+    }
+    with open(os.path.join(output_dir, f"{base_name}_result.json"), "w") as f:
+        json.dump(result_data, f, indent=2)
+
+    # 清理显存
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return result
+
+
+def process_directory(counter: AdaptiveColonyCounter, dir_path: str, output_dir: str, **kwargs) -> dict:
+    """批量处理目录下的图片"""
+    # 筛选图片文件
+    image_files = [f for f in os.listdir(dir_path) if Path(f).suffix.lower() in IMAGE_EXTENSIONS]
+
+    # 自然排序，让 1.jpg 排在 10.jpg 前面
+    def natural_key(s):
+        return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
+    image_files.sort(key=natural_key)
+
+    if not image_files:
+        print(f"No images found in: {dir_path}")
+        return {}
+
+    results = {}
+    for i, img_file in enumerate(image_files, 1):
+        img_path = os.path.join(dir_path, img_file)
+        print(f"\n[{i}/{len(image_files)}] ", end="")
+        result = process_single_image(counter, img_path, output_dir=output_dir, **kwargs)
+        results[img_file] = {"count": result["count"], "stage": result["stage"]}
+
+    # 保存汇总结果
+    summary_path = os.path.join(output_dir, "summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(results, f, indent=2)
+
+    return results
+
+
+def main():
+    """命令行入口"""
+    parser = argparse.ArgumentParser(description="Adaptive Colony Counting")
+    parser.add_argument("--image_path", type=str, help="Single image path")
+    parser.add_argument("--image_dir", type=str, help="Directory of images")
+    parser.add_argument("--model_path", type=str, default="./LocateAnything-3B")
+    parser.add_argument("--output_dir", type=str, default="./colony_results_adaptive")
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--sparse_threshold", type=int, default=50)
+    parser.add_argument("--dense_threshold", type=int, default=150)
+    parser.add_argument("--nms_iou_threshold", type=float, default=0.3)
+    parser.add_argument("--dedup_distance", type=float, default=3.0)
+    parser.add_argument("--clahe_clip_limit", type=float, default=2.0)
+    parser.add_argument("--tile_grid_size", type=int, default=8)
+    parser.add_argument("--watershed_area_factor", type=float, default=2.0)
+    parser.add_argument("--watershed_dist_ratio", type=float, default=0.3)
+    parser.add_argument("--watershed_min_area_ratio", type=float, default=0.0005)
+
+    args = parser.parse_args()
+
+    # 必须指定单张图片或目录
+    if not args.image_path and not args.image_dir:
+        parser.error("Either --image_path or --image_dir must be specified")
+
+    counter = AdaptiveColonyCounter(model_path=args.model_path, device=args.device)
+
+    # 收集算法参数
+    kwargs = {
+        "sparse_threshold": args.sparse_threshold,
+        "dense_threshold": args.dense_threshold,
+        "nms_iou_threshold": args.nms_iou_threshold,
+        "dedup_distance": args.dedup_distance,
+        "clahe_clip_limit": args.clahe_clip_limit,
+        "tile_grid_size": args.tile_grid_size,
+        "watershed_area_factor": args.watershed_area_factor,
+        "watershed_dist_ratio": args.watershed_dist_ratio,
+        "watershed_min_area_ratio": args.watershed_min_area_ratio,
+    }
+
+    if args.image_path:
+        process_single_image(counter, args.image_path, output_dir=args.output_dir, **kwargs)
+    else:
+        process_directory(counter, args.image_dir, output_dir=args.output_dir, **kwargs)
+
+
+if __name__ == "__main__":
+    main()
+
+
+第四部分：细胞计数算法
+
+"""
+count_simple.py
+
+细胞相对于菌落大小更均匀，细胞计数比较简单，
+直接调用 LocateAnything 模型检测也能得到很好的效果。
+没有预处理，模型输出的边界框用 NMS 去重即可。
+"""
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+import torch
+from PIL import Image, ImageDraw, ImageFont
+
+# 添加模型 worker 路径
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "Eagle", "Embodied"))
+from locateanything_worker import LocateAnythingWorker
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
+
+
+def nms(boxes: list[dict], iou_threshold: float = 0.3) -> list[dict]:
+    """非极大值抑制"""
+    if not boxes:
+        return []
+
+    # 计算面积
+    for box in boxes:
+        box["area"] = (box["x4"] - box["x1"]) * (box["y2"] - box["y1"])
+
+    # 大框优先
+    boxes = sorted(boxes, key=lambda b: b["area"], reverse=True)
+    keep = []
+    while boxes:
+        current = boxes.pop(0)
+        keep.append(current)
+        # 过滤重叠框
+        filtered = []
+        for box in boxes:
+            x1 = max(current["x1"], box["x1"])
+            y1 = max(current["y1"], box["y1"])
+            x2 = min(current["x2"], box["x2"])
+            y2 = min(current["y2"], box["y2"])
+            inter_area = max(0, x2 - x1) * max(0, y2 - y1)
+            union_area = current["area"] + box["area"] - inter_area
+            iou = inter_area / union_area if union_area > 0 else 0
+            if iou < iou_threshold:
+                filtered.append(box)
+        boxes = filtered
+    return keep
+
+
+def parse_boxes(answer: str, image_width: int, image_height: int) -> list[dict]:
+    """解析模型输出为像素坐标的边界框"""
+    boxes = []
+    # 正则匹配模型输出的 box 标签
+    for m in re.finditer(r"<box><(\d+)><(\d+)><(\d+)><(\d+)></box>", answer):
+        x1, y1, x2, y2 = [int(g) for g in m.groups()]
+        # 0-1000 归一化坐标转像素坐标
+        boxes.append({
+            "x1": x1 / 1000 * image_width,
+            "y1": y1 / 1000 * image_height,
+            "x2": x2 / 1000 * image_width,
+            "y2": y2 / 1000 * image_height,
+        })
+    return boxes
+
+
+def visualize_result(image, result, output_path):
+    """画细胞中心点"""
+    draw_image = image.copy()
+    draw = ImageDraw.Draw(draw_image)
+
+    boxes = result.get("boxes", [])
+    count = result.get("count", 0)
+
+    # 画每个框的中心点
+    for box in boxes:
+        x1, y1, x2, y2 = box["x1"], box["y1"], box["x2"], box["y2"]
+        # 确保坐标有序
+        x1, x2 = min(x1, x2), max(x1, x2)
+        y1, y2 = min(y1, y2), max(y1, y2)
+        center_x = (x1 + x2) / 2
+        center_y = (y1 + y2) / 2
+
+        radius = 2
+        draw.ellipse(
+            [(center_x - radius, center_y - radius), (center_x + radius, center_y + radius)],
+            fill="red",
+            outline="white",
+            width=1,
+        )
+
+    # 加载字体并画计数文字
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24)
+    except (IOError, OSError):
+        font = ImageFont.load_default()
+
+    count_text = f"Cell Count: {count}"
+    bbox = draw.textbbox((0, 0), count_text, font=font)
+    margin = 5
+    # 白底背景框
+    draw.rectangle(
+        [(margin, margin), (margin + bbox[2] - bbox[0] + margin * 2, margin + bbox[3] - bbox[1] + margin * 2)],
+        fill="white",
+    )
+    draw.text((margin * 2, margin), count_text, fill="black", font=font)
+    draw_image.save(output_path)
+
+
+def process_single_image(worker: LocateAnythingWorker, image_path: str, output_dir: str, nms_iou_threshold: float = 0.3) -> dict:
+    """处理单张细胞图片"""
+    print(f"\nProcessing: {image_path}")
+    image = Image.open(image_path).convert("RGB")
+    image_width, image_height = image.size
+
+    # 细胞检测提示词
+    prompt = (
+        "Locate all the instances that match the following description: cell. "
+        "These appear as small circular, oval, or semi-circular shapes. "
+        "When cells are crowded or touching, they may be deformed, squeezed into "
+        "ellipses or half-circles. Even if cells are touching or overlapping, "
+        "each cell must be enclosed in a SEPARATE bounding box. "
+        "Do NOT group multiple cells into one large box. "
+        "Each bounding box should tightly enclose a single cell."
+    )
+
+    # 调用模型推理
+    result = worker.predict(image, prompt, verbose=True)
+    answer = result["answer"]
+    # 解析边界框
+    boxes = parse_boxes(answer, image_width, image_height)
+    raw_count = len(boxes)
+    print(f"Raw detection: {raw_count} boxes")
+    # NMS 去重
+    boxes = nms(boxes, nms_iou_threshold)
+    print(f"After NMS: {len(boxes)} boxes")
+
+    # 保存结果
+    os.makedirs(output_dir, exist_ok=True)
+    base_name = Path(image_path).stem
+    image.save(os.path.join(output_dir, f"{base_name}_original.png"))
+    visualize_result(image, {"boxes": boxes, "count": len(boxes)}, os.path.join(output_dir, f"{base_name}_visualization.png"))
+
+    result_data = {
+        "image_path": image_path,
+        "count": len(boxes),
+        "raw_count": raw_count,
+        "boxes": boxes,
+        "answer": answer,
+    }
+    with open(os.path.join(output_dir, f"{base_name}_result.json"), "w") as f:
+        json.dump(result_data, f, indent=2)
+
+    # 清理显存
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return {"count": len(boxes), "raw_count": raw_count, "boxes": boxes, "answer": answer}
+
+
+def process_directory(worker: LocateAnythingWorker, dir_path: str, output_dir: str, nms_iou_threshold: float = 0.3) -> dict:
+    """批量处理目录"""
+    image_files = [f for f in os.listdir(dir_path) if Path(f).suffix.lower() in IMAGE_EXTENSIONS]
+
+    # 自然排序
+    def natural_key(s):
+        return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
+    image_files.sort(key=natural_key)
+    if not image_files:
+        print(f"No images found in: {dir_path}")
+        return {}
+    results = {}
+    for i, img_file in enumerate(image_files, 1):
+        img_path = os.path.join(dir_path, img_file)
+        print(f"\n[{i}/{len(image_files)}] ", end="")
+        result = process_single_image(worker, img_path, output_dir, nms_iou_threshold)
+        results[img_file] = result["count"]
+
+    # 保存汇总
+    summary_path = os.path.join(output_dir, "summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(results, f, indent=2)
+    return results
+
+
+def main():
+    """命令行入口"""
+    parser = argparse.ArgumentParser(description="Simple Cell Counting")
+    parser.add_argument("--image_path", type=str, help="Single image path")
+    parser.add_argument("--image_dir", type=str, help="Directory of images")
+    parser.add_argument("--model_path", type=str, default="./LocateAnything-3B")
+    parser.add_argument("--output_dir", type=str, default="./cell_results_simple")
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--nms_iou_threshold", type=float, default=0.3)
+    args = parser.parse_args()
+
+    if not args.image_path and not args.image_dir:
+        parser.error("Either --image_path or --image_dir must be specified")
+    print(f"Loading model from: {args.model_path}")
+    # 加载模型
+    worker = LocateAnythingWorker(model_path=args.model_path, device=args.device, dtype=torch.bfloat16)
+    print("Model loaded successfully.")
+
+    if args.image_path:
+        process_single_image(worker, args.image_path, output_dir=args.output_dir, nms_iou_threshold=args.nms_iou_threshold)
+    else:
+        process_directory(worker, args.image_dir, output_dir=args.output_dir, nms_iou_threshold=args.nms_iou_threshold)
+
+
+if __name__ == "__main__":
+    main()

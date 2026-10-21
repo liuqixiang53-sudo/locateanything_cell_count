@@ -1,0 +1,208 @@
+{
+  "0": {
+    "mae": 14.47,
+    "rmse": 19.14,
+    "mape": 14.24,
+    "precision": 0.8869,
+    "recall": 0.7818,
+    "f1": 0.831,
+    "total_tp": 1168,
+    "total_fp": 149,
+    "total_fn": 326,
+    "avg_elapsed": 10.6,
+    "n_images": 15,
+    "dir": "locateanything_t0",
+    "mae_mean": 14.47,
+    "mae_std": 0.0,
+    "f1_mean": 0.83,
+    "f1_std": 0.0,
+    "n_runs": 3,
+    "runs": [
+      {
+        "dir": "locateanything_t0",
+        "mae": 14.47,
+        "mape": 14.24,
+        "precision": 0.8869,
+        "recall": 0.7818,
+        "f1": 0.831
+      },
+      {
+        "dir": "locateanything_t0_r2",
+        "mae": 14.47,
+        "mape": 14.24,
+        "precision": 0.8869,
+        "recall": 0.7818,
+        "f1": 0.831
+      },
+      {
+        "dir": "locateanything_t0_r3",
+        "mae": 14.47,
+        "mape": 14.24,
+        "precision": 0.8869,
+        "recall": 0.7818,
+        "f1": 0.831
+      }
+    ]
+  },
+  "0.1": {
+    "mae": 23.73,
+    "rmse": 39.39,
+    "mape": 21.28,
+    "precision": 0.8475,
+    "recall": 0.6546,
+    "f1": 0.7387,
+    "total_tp": 978,
+    "total_fp": 176,
+    "total_fn": 516,
+    "avg_elapsed": 7.81,
+    "n_images": 15,
+    "dir": "locateanything_t0.1",
+    "mae_mean": 23.73,
+    "mae_std": 0.0,
+    "f1_mean": 0.74,
+    "f1_std": 0.0,
+    "n_runs": 1,
+    "runs": [
+      {
+        "dir": "locateanything_t0.1",
+        "mae": 23.73,
+        "mape": 21.28,
+        "precision": 0.8475,
+        "recall": 0.6546,
+        "f1": 0.7387
+      }
+    ]
+  },
+  "0.3": {
+    "mae": 16.2,
+    "rmse": 23.43,
+    "mape": 15.71,
+    "precision": 0.8726,
+    "recall": 0.7517,
+    "f1": 0.8076,
+    "total_tp": 1123,
+    "total_fp": 164,
+    "total_fn": 371,
+    "avg_elapsed": 10.0,
+    "n_images": 15,
+    "dir": "locateanything_t0.3",
+    "mae_mean": 16.2,
+    "mae_std": 0.0,
+    "f1_mean": 0.81,
+    "f1_std": 0.0,
+    "n_runs": 1,
+    "runs": [
+      {
+        "dir": "locateanything_t0.3",
+        "mae": 16.2,
+        "mape": 15.71,
+        "precision": 0.8726,
+        "recall": 0.7517,
+        "f1": 0.8076
+      }
+    ]
+  },
+  "0.5": {
+    "mae": 14.67,
+    "rmse": 20.49,
+    "mape": 15.02,
+    "precision": 0.8831,
+    "recall": 0.7684,
+    "f1": 0.8218,
+    "total_tp": 1148,
+    "total_fp": 152,
+    "total_fn": 346,
+    "avg_elapsed": 10.28,
+    "n_images": 15,
+    "dir": "locateanything_t0.5",
+    "mae_mean": 14.67,
+    "mae_std": 0.0,
+    "f1_mean": 0.82,
+    "f1_std": 0.0,
+    "n_runs": 1,
+    "runs": [
+      {
+        "dir": "locateanything_t0.5",
+        "mae": 14.67,
+        "mape": 15.02,
+        "precision": 0.8831,
+        "recall": 0.7684,
+        "f1": 0.8218
+      }
+    ]
+  },
+  "0.7": {
+    "mae": 21.4,
+    "rmse": 44.59,
+    "mape": 18.56,
+    "precision": 0.8868,
+    "recall": 0.7236,
+    "f1": 0.7969,
+    "total_tp": 1081,
+    "total_fp": 138,
+    "total_fn": 413,
+    "avg_elapsed": 10.06,
+    "n_images": 15,
+    "dir": "locateanything_t0.7",
+    "mae_mean": 21.4,
+    "mae_std": 0.0,
+    "f1_mean": 0.8,
+    "f1_std": 0.0,
+    "n_runs": 1,
+    "runs": [
+      {
+        "dir": "locateanything_t0.7",
+        "mae": 21.4,
+        "mape": 18.56,
+        "precision": 0.8868,
+        "recall": 0.7236,
+        "f1": 0.7969
+      }
+    ]
+  },
+  "1": {
+    "mae": 11.53,
+    "rmse": 14.69,
+    "mape": 13.55,
+    "precision": 0.8844,
+    "recall": 0.8092,
+    "f1": 0.8452,
+    "total_tp": 1209,
+    "total_fp": 158,
+    "total_fn": 285,
+    "avg_elapsed": 11.44,
+    "n_images": 15,
+    "dir": "locateanything_t1",
+    "mae_mean": 16.47,
+    "mae_std": 5.84,
+    "f1_mean": 0.82,
+    "f1_std": 0.03,
+    "n_runs": 3,
+    "runs": [
+      {
+        "dir": "locateanything_t1",
+        "mae": 11.53,
+        "mape": 13.55,
+        "precision": 0.8844,
+        "recall": 0.8092,
+        "f1": 0.8452
+      },
+      {
+        "dir": "locateanything_t1_r2",
+        "mae": 24.67,
+        "mape": 27.15,
+        "precision": 0.8532,
+        "recall": 0.7082,
+        "f1": 0.774
+      },
+      {
+        "dir": "locateanything_t1_r3",
+        "mae": 13.2,
+        "mape": 15.23,
+        "precision": 0.8695,
+        "recall": 0.7938,
+        "f1": 0.83
+      }
+    ]
+  }
+}

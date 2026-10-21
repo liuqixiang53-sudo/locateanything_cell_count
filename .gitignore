@@ -1,0 +1,34 @@
+# ===== 大体积目录：虚拟环境与模型权重，严禁入库 =====
+# locateanthing/ = 6.0G Python venv；LocateAnything-3B/ = 7.3G 模型权重（运行时依赖，留在磁盘）
+locateanthing/
+LocateAnything-3B/
+*.safetensors
+*.bin
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.gguf
+
+# ===== 已解除链接的嵌套仓库备份（含完整 git 对象库 85M，严禁入库）=====
+.git.disabled/
+*.gitattributes.disabled
+
+# ===== Python 缓存 =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# ===== 日志 =====
+*.log
+
+# ===== IDE / 编辑器 =====
+.vscode/
+.idea/
+
+# ===== 系统文件 =====
+.DS_Store
+Thumbs.db
+

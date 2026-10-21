@@ -1,0 +1,53 @@
+# 对照实验配置
+experiment:
+  name: "细胞计数多模型对比实验"
+  image_dir: "对照实验/images"
+  ground_truth_dir: "对照实验/ground_truth/lable"
+  output_dir: "对照实验/results"
+  visualization_dir: "对照实验/visualizations"
+  nms_iou_threshold: 0.3
+  temperature: 0  # 温度消融(3次重复,temperature_ablation.json)选定: T=0 确定性输出 MAE 14.47±0.0 最稳; T=1 单次11.53为运气(均值16.47±5.84); T=0.1 最差
+  max_new_tokens: 2048
+
+models:
+  - name: "LocateAnything-3B"
+    type: "local"
+    model_path: "LocateAnything-3B"
+    output_subdir: "locateanything"
+    generation_mode: "hybrid"
+
+  - name: "Qwen2.5-VL:7b"
+    type: "ollama"
+    model_name: "qwen2.5vl:7b"
+    output_subdir: "ollama_qwen25vl"
+    ollama_host: "http://localhost:11434"
+    counting_mode: true
+    counting_prompt: "Count the total number of colony spots in this petri dish. Include all colonies, even tiny ones at the edge. Include touching colonies. Output ONLY the integer count."
+
+  - name: "Qwen3-VL:8b"
+    type: "ollama"
+    model_name: "qwen3-vl:8b"
+    output_subdir: "ollama_qwen3vl"
+    ollama_host: "http://localhost:11434"
+    counting_mode: true
+    counting_prompt: "Count the total number of colony spots in this petri dish. Include all colonies, even tiny ones at the edge. Include touching colonies. Output ONLY the integer count."
+
+  - name: "豆包"
+    type: "manual"
+    output_subdir: "doubao"
+    notes: "网页版手动操作，使用 semi_auto_recorder.py 录制"
+
+  - name: "DeepSeek"
+    type: "manual"
+    output_subdir: "deepseek"
+    notes: "网页版手动操作，使用 semi_auto_recorder.py 录制"
+
+evaluation:
+  point_match_distance: 20  # 像素距离阈值，匹配点对
+  metrics:
+    - "mae"
+    - "rmse"
+    - "mape"
+    - "precision"
+    - "recall"
+    - "f1"

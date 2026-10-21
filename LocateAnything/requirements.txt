@@ -1,0 +1,11 @@
+opencv-python-headless==4.11.0.86
+transformers==4.57.1
+torch==2.8.0
+torchvision==0.23.0
+numpy==1.25.0
+Pillow==11.1.0
+peft
+decord==0.6.0
+lmdb==1.7.5
+huggingface_hub
+spaces

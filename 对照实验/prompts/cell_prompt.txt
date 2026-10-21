@@ -1,0 +1,7 @@
+Locate all the instances that match the following description: cell.
+These appear as small circular, oval, or semi-circular shapes.
+When cells are crowded or touching, they may be deformed, squeezed into
+ellipses or half-circles. Even if cells are touching or overlapping,
+each cell must be enclosed in a SEPARATE bounding box.
+Do NOT group multiple cells into one large box.
+Each bounding box should tightly enclose a single cell.

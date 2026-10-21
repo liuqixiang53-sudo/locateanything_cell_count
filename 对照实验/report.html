@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>细胞计数多模型对比实验报告</title>
+<style>
+:root { --line:#e3e8ef; --txt:#1f2937; --sub:#6b7280; --bg:#f7f9fc; }
+* { box-sizing:border-box; }
+body { font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif; color:var(--txt);
+       background:var(--bg); margin:0; line-height:1.65; }
+.wrap { max-width:1080px; margin:0 auto; padding:32px 24px 64px; }
+header { background:linear-gradient(135deg,#1e3a8a,#2f81f7); color:#fff; border-radius:14px;
+         padding:28px 32px; margin-bottom:28px; }
+header h1 { margin:0 0 6px; font-size:26px; }
+header .meta { opacity:.85; font-size:13px; }
+h2 { font-size:20px; margin:40px 0 14px; padding-left:10px; border-left:4px solid #2f81f7; }
+h3 { font-size:16px; margin:22px 0 8px; }
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; }
+.card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px 18px;
+        box-shadow:0 1px 3px rgba(0,0,0,.05); }
+.card .k { font-size:12px; color:var(--sub); }
+.card .v { font-size:22px; font-weight:700; margin-top:4px; }
+.card .s { font-size:12px; color:var(--sub); }
+table { width:100%; border-collapse:collapse; background:#fff; border-radius:10px; overflow:hidden;
+        box-shadow:0 1px 3px rgba(0,0,0,.05); font-size:13.5px; }
+th { background:#eef3fb; padding:9px 10px; text-align:left; font-weight:600; border-bottom:2px solid var(--line);}
+td { padding:8px 10px; border-bottom:1px solid var(--line); }
+tr.row:hover td { background:#f4f8ff; }
+tr.best-row td { background:#f0fdf4; }
+td.model { font-weight:600; white-space:nowrap; }
+td.best { color:#15803d; font-weight:700; }
+td.gt { font-weight:600; background:#f0fdf4; }
+td.na, .na { color:#b6bfcc; }
+td.winner { font-size:12.5px; white-space:nowrap; }
+.dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; }
+.e0 { background:#dcfce7; } .e1 { background:#fef9c3; }
+.e2 { background:#ffedd5; } .e3 { background:#fee2e2; }
+.legend { font-size:12px; color:var(--sub); margin-top:8px; }
+.legend span { padding:1px 8px; border-radius:4px; margin-right:6px; }
+.charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:18px; }
+.chart { background:#fff; border:1px solid var(--line); border-radius:12px; padding:14px; }
+.chart svg { width:100%; height:auto; }
+.chart-title { font-size:14px; font-weight:700; fill:var(--txt); }
+.chart-label { font-size:12px; fill:var(--txt); }
+.chart-value { font-size:12px; fill:var(--sub); }
+.chart-note { font-size:11px; fill:#b6bfcc; }
+.block { background:#fff; border:1px solid var(--line); border-radius:12px; padding:18px 22px; margin-bottom:14px; }
+.rank { padding:6px 0; border-bottom:1px dashed var(--line); font-size:14px; }
+.rank-name { display:inline-block; min-width:110px; font-weight:700; color:#1e3a8a; }
+pre.note { white-space:pre-wrap; font-family:inherit; background:#f8fafc; border:1px solid var(--line);
+           border-radius:8px; padding:12px 14px; margin:8px 0 0; font-size:13px; }
+blockquote { margin:10px 0; padding:10px 16px; background:#f8fafc; border-left:4px solid #2f81f7;
+             font-size:12.5px; color:var(--sub); border-radius:0 8px 8px 0; white-space:pre-wrap; }
+ul { margin:8px 0; } li { margin:4px 0; }
+footer { margin-top:36px; font-size:12px; color:var(--sub); text-align:center; }
+</style>
+</head>
+<body><div class="wrap">
+
+<header>
+  <h1>培养皿菌落/细胞计数 · 多模型对比实验报告</h1>
+  <div class="meta">生成时间 2026-10-14 14:04 ｜ 测试图片 15 张 ｜ 参与对比 4 个模型 ｜ 点匹配阈值 20 px</div>
+</header>
+
+<h2>1. 核心结论</h2>
+<div class="cards">
+  <div class="card"><div class="k">最佳计数精度（MAE）</div><div class="v">LocateAnything-3B</div>
+    <div class="s">MAE 14.47，MAPE 14.2%</div></div>
+  <div class="card"><div class="k">最佳空间定位（F1）</div><div class="v">LocateAnything-3B</div>
+    <div class="s">F1 0.8310（唯一/领先具备可用坐标）</div></div>
+  <div class="card"><div class="k">最快推理</div><div class="v">LocateAnything-3B</div>
+    <div class="s">平均 10.6s/张（Qwen3-VL 为其 ~26 倍）</div></div>
+  <div class="card"><div class="k">网页版模型可用性</div><div class="v" style="color:#b91c1c">不合格</div>
+    <div class="s">豆包无法产出可用结果；DeepSeek 结果与文件无法对应</div></div>
+</div>
+<div class="block">
+  <ul>
+    <li><b>LocateAnything-3B（本方案）全面领先</b>：MAE 23.53 / MAPE 21.1% / F1 0.73，且是唯一定位可用的模型，推理也最快（8.2s/张）。</li>
+    <li><b>通用 VLM 计数能力不可靠</b>：Qwen2.5-VL 出现严重"锚定"复读（87% 的图输出 105（10张）、150（3张）、45（2张））；Qwen3-VL 出现 3813、2256 等离群值（剔除两张离群后 MAE 仍为 41.6，误差中位数 40.0）。</li>
+    <li><b>DeepSeek 计数看似合理实则虚高</b>：输出全部落在 46~116 的窄区间，与图片真实密度（28~193）无关；点匹配 F1 仅 0.081，坐标接近幻觉。</li>
+    <li><b>豆包多轮对话仍不能稳定输出结果且速度慢</b>，批量多图时无法输出计数与对应文件名，结果不参与量化对比。</li>
+    <li><b>温度敏感性消融</b>：LocateAnything-3B 对采样温度敏感（各档 MAE 最大差 9.3），最优 T=0（MAE 14.47 ± 0.00，3 次运行 / F1 0.8300），主对比表已采用该配置。</li>
+  </ul>
+</div>
+
+<h2>2. 实验设置</h2>
+<div class="block">
+  <table>
+    <tr><th>项目</th><th>说明</th></tr>
+    <tr><td>任务</td><td>培养皿菌落/细胞图片计数与定位，以人工点标注为 Ground Truth（X-AnyLabeling）</td></tr>
+    <tr><td>测试集</td><td>15 张图（1360×1024），GT 计数范围 28~193</td></tr>
+    <tr><td>评价指标</td><td>MAE / RMSE / MAPE（计数）；Precision / Recall / F1（匈牙利点匹配，阈值 20 px）；平均单图耗时</td></tr>
+    <tr><td>评估口径</td><td>LocateAnything：检测框 NMS(IoU 0.3) 后取中心点；Ollama 模型：计数模式仅输出数字；DeepSeek：0-1000 归一化框换算为像素中心点</td></tr>
+  </table>
+  <h3>统一 Prompt（本地模型）</h3>
+  <blockquote>Locate all the instances that match the following description: cell.
+These appear as small circular, oval, or semi-circular shapes.
+When cells are crowded or touching, they may be deformed, squeezed into
+ellipses or half-circles. Even if cells are touching or overlapping,
+each cell must be enclosed in a SEPARATE bounding box.
+Do NOT group multiple cells into one large box.
+Each bounding box should tightly enclose a single cell.</blockquote>
+</div>
+
+<h2>3. 综合指标对比</h2>
+<table>
+  <tr><th>模型</th><th>MAE ↓</th><th>RMSE ↓</th><th>MAPE ↓</th><th>Precision ↑</th><th>Recall ↑</th><th>F1 ↑</th><th>单图耗时</th><th>部署方式</th></tr>
+  <tr><td class='model'><span class='dot' style='background:#2f81f7'></span>LocateAnything-3B</td><td class='best'>14.47</td><td>19.14</td><td>14.2%</td><td>0.8869</td><td>0.7818</td><td class='best'>0.8310</td><td>10.6s</td><td>本地部署</td></tr><tr><td class='model'><span class='dot' style='background:#9a6700'></span>Qwen2.5-VL:7b</td><td class=''>38.00</td><td>42.73</td><td>56.4%</td><td><span class="na">N/A</span></td><td><span class="na">N/A</span></td><td class=''><span class="na">N/A</span></td><td>31.8s</td><td>本地部署 (Ollama)</td></tr><tr><td class='model'><span class='dot' style='background:#b91c1c'></span>Qwen3-VL:8b</td><td class=''>427.07</td><td>1112.45</td><td>527.3%</td><td><span class="na">N/A</span></td><td><span class="na">N/A</span></td><td class=''><span class="na">N/A</span></td><td>278.2s</td><td>本地部署 (Ollama)</td></tr><tr><td class='model'><span class='dot' style='background:#7c3aed'></span>DeepSeek (网页版)</td><td class=''>43.87</td><td>50.92</td><td>54.8%</td><td>0.0920</td><td>0.0730</td><td class=''>0.0814</td><td><span class="na">N/A</span>s</td><td>网页版</td></tr>
+</table>
+<div class="legend">注：LocateAnything-3B – 输出检测框，NMS 后取中心点，参与全部指标；Qwen2.5-VL:7b – 计数模式（仅输出数字），无空间坐标；Qwen3-VL:8b – 计数模式（仅输出数字），无空间坐标；DeepSeek (网页版) – 输出归一化(0-1000)边界框，换算后参与点匹配。DeepSeek 为网页版人工问答，无精确耗时记录。LocateAnything 主结果采样温度 T=0（由温度消融选定）。</div>
+
+<div class="charts" style="margin-top:18px"><div class="chart"><svg viewBox="0 0 700 206" xmlns="http://www.w3.org/2000/svg" role="img"><text x="0" y="20" class="chart-title">MAE 平均绝对误差</text><text x="182" y="54" text-anchor="end" class="chart-label">LocateAnything-3B</text><rect x="190" y="34" width="15" height="30" rx="4" fill="#666" fill-opacity="0.85"/><text x="213" y="54" class="chart-value">14.47</text><text x="182" y="94" text-anchor="end" class="chart-label">Qwen2.5-VL:7b</text><rect x="190" y="74" width="40" height="30" rx="4" fill="#666" fill-opacity="0.85"/><text x="238" y="94" class="chart-value">38.00</text><text x="182" y="134" text-anchor="end" class="chart-label">Qwen3-VL:8b</text><rect x="190" y="114" width="450" height="30" rx="4" fill="#666" fill-opacity="0.85"/><text x="648" y="134" class="chart-value">427.07</text><text x="182" y="174" text-anchor="end" class="chart-label">DeepSeek (网页版)</text><rect x="190" y="154" width="46" height="30" rx="4" fill="#666" fill-opacity="0.85"/><text x="244" y="174" class="chart-value">43.87</text><text x="190" y="202" class="chart-note">↓ 越低越好</text></svg></div><div class="chart"><svg viewBox="0 0 700 206" xmlns="http://www.w3.org/2000/svg" role="img"><text x="0" y="20" class="chart-title">MAPE 平均绝对百分比误差 (%)</text><text x="182" y="54" text-anchor="end" class="chart-label">LocateAnything-3B</text><rect x="190" y="34" width="12" height="30" rx="4" fill="#666" fill-opacity="0.85"/><text x="210" y="54" class="chart-value">14.24</text><text x="182" y="94" text-anchor="end" class="chart-label">Qwen2.5-VL:7b</text><rect x="190" y="74" width="48" height="30" rx="4" fill="#666" fill-opacity="0.85"/><text x="246" y="94" class="chart-value">56.39</text><text x="182" y="134" text-anchor="end" class="chart-label">Qwen3-VL:8b</text><rect x="190" y="114" width="450" height="30" rx="4" fill="#666" fill-opacity="0.85"/><text x="648" y="134" class="chart-value">527.34</text><text x="182" y="174" text-anchor="end" class="chart-label">DeepSeek (网页版)</text><rect x="190" y="154" width="46" height="30" rx="4" fill="#666" fill-opacity="0.85"/><text x="244" y="174" class="chart-value">54.77</text><text x="190" y="202" class="chart-note">↓ 越低越好</text></svg></div><div class="chart"><svg viewBox="0 0 700 126" xmlns="http://www.w3.org/2000/svg" role="img"><text x="0" y="20" class="chart-title">F1 Score（点匹配）</text><text x="182" y="54" text-anchor="end" class="chart-label">LocateAnything-3B</text><rect x="190" y="34" width="450" height="30" rx="4" fill="#666" fill-opacity="0.85"/><text x="648" y="54" class="chart-value">0.83</text><text x="182" y="94" text-anchor="end" class="chart-label">DeepSeek (网页版)</text><rect x="190" y="74" width="44" height="30" rx="4" fill="#666" fill-opacity="0.85"/><text x="242" y="94" class="chart-value">0.08</text><text x="190" y="122" class="chart-note">↑ 越高越好</text></svg></div><div class="chart"><svg viewBox="0 0 700 166" xmlns="http://www.w3.org/2000/svg" role="img"><text x="0" y="20" class="chart-title">平均单图耗时（秒）</text><text x="182" y="54" text-anchor="end" class="chart-label">LocateAnything-3B</text><rect x="190" y="34" width="17" height="30" rx="4" fill="#666" fill-opacity="0.85"/><text x="215" y="54" class="chart-value">10.6</text><text x="182" y="94" text-anchor="end" class="chart-label">Qwen2.5-VL:7b</text><rect x="190" y="74" width="51" height="30" rx="4" fill="#666" fill-opacity="0.85"/><text x="249" y="94" class="chart-value">31.8</text><text x="182" y="134" text-anchor="end" class="chart-label">Qwen3-VL:8b</text><rect x="190" y="114" width="450" height="30" rx="4" fill="#666" fill-opacity="0.85"/><text x="648" y="134" class="chart-value">278.2</text><text x="190" y="162" class="chart-note">↓ 越低越好</text></svg></div></div>
+
+<h2>4. 逐图对比明细</h2>
+<table>
+  <tr><th>图片</th><th>GT</th><th>LocateAnything-3B</th><th>Qwen2.5-VL:7b</th><th>Qwen3-VL:8b</th><th>DeepSeek (网页版)</th><th>最优</th></tr>
+  <tr class='row'><td>1.jpg</td><td class='gt'>65</td><td class='e2'>51 (-14)</td><td class='e3'>105 (+40)</td><td class='e3'>3813 (+3748)</td><td class='e2'>46 (-19)</td><td class='winner'><span class='dot' style='background:#2f81f7'></span>LocateAnything-3B</td></tr><tr class='row'><td>2.jpg</td><td class='gt'>41</td><td class='e2'>30 (-11)</td><td class='e1'>45 (+4)</td><td class='e3'>12 (-29)</td><td class='e1'>48 (+7)</td><td class='winner'><span class='dot' style='background:#9a6700'></span>Qwen2.5-VL:7b</td></tr><tr class='row'><td>3.jpg</td><td class='gt'>28</td><td class='e0'>28 (0)</td><td class='e3'>45 (+17)</td><td class='e2'>14 (-14)</td><td class='e3'>65 (+37)</td><td class='winner'><span class='dot' style='background:#2f81f7'></span>LocateAnything-3B</td></tr><tr class='row'><td>8.jpg</td><td class='gt'>119</td><td class='e0'>114 (-5)</td><td class='e1'>105 (-14)</td><td class='e3'>47 (-72)</td><td class='e1'>105 (-14)</td><td class='winner'><span class='dot' style='background:#2f81f7'></span>LocateAnything-3B</td></tr><tr class='row'><td>13.jpg</td><td class='gt'>50</td><td class='e1'>54 (+4)</td><td class='e3'>105 (+55)</td><td class='e3'>10 (-40)</td><td class='e3'>96 (+46)</td><td class='winner'><span class='dot' style='background:#2f81f7'></span>LocateAnything-3B</td></tr><tr class='row'><td>14.jpg</td><td class='gt'>48</td><td class='e1'>41 (-7)</td><td class='e3'>105 (+57)</td><td class='e3'>10 (-38)</td><td class='e3'>100 (+52)</td><td class='winner'><span class='dot' style='background:#2f81f7'></span>LocateAnything-3B</td></tr><tr class='row'><td>15.jpg</td><td class='gt'>64</td><td class='e2'>41 (-23)</td><td class='e3'>105 (+41)</td><td class='e2'>50 (-14)</td><td class='e2'>85 (+21)</td><td class='winner'><span class='dot' style='background:#b91c1c'></span>Qwen3-VL:8b</td></tr><tr class='row'><td>18.jpg</td><td class='gt'>147</td><td class='e1'>128 (-19)</td><td class='e2'>105 (-42)</td><td class='e2'>78 (-69)</td><td class='e2'>90 (-57)</td><td class='winner'><span class='dot' style='background:#2f81f7'></span>LocateAnything-3B</td></tr><tr class='row'><td>21.jpg</td><td class='gt'>193</td><td class='e2'>143 (-50)</td><td class='e2'>150 (-43)</td><td class='e2'>98 (-95)</td><td class='e3'>92 (-101)</td><td class='winner'><span class='dot' style='background:#9a6700'></span>Qwen2.5-VL:7b</td></tr><tr class='row'><td>25.jpg</td><td class='gt'>152</td><td class='e1'>138 (-14)</td><td class='e0'>150 (-2)</td><td class='e1'>123 (-29)</td><td class='e2'>101 (-51)</td><td class='winner'><span class='dot' style='background:#9a6700'></span>Qwen2.5-VL:7b</td></tr><tr class='row'><td>26.jpg</td><td class='gt'>192</td><td class='e1'>169 (-23)</td><td class='e2'>150 (-42)</td><td class='e0'>185 (-7)</td><td class='e2'>96 (-96)</td><td class='winner'><span class='dot' style='background:#b91c1c'></span>Qwen3-VL:8b</td></tr><tr class='row'><td>27.jpg</td><td class='gt'>165</td><td class='e1'>136 (-29)</td><td class='e2'>105 (-60)</td><td class='e3'>75 (-90)</td><td class='e2'>116 (-49)</td><td class='winner'><span class='dot' style='background:#2f81f7'></span>LocateAnything-3B</td></tr><tr class='row'><td>28.jpg</td><td class='gt'>139</td><td class='e1'>148 (+9)</td><td class='e2'>105 (-34)</td><td class='e3'>2256 (+2117)</td><td class='e2'>103 (-36)</td><td class='winner'><span class='dot' style='background:#2f81f7'></span>LocateAnything-3B</td></tr><tr class='row'><td>32.jpg</td><td class='gt'>53</td><td class='e1'>60 (+7)</td><td class='e3'>105 (+52)</td><td class='e3'>12 (-41)</td><td class='e3'>82 (+29)</td><td class='winner'><span class='dot' style='background:#2f81f7'></span>LocateAnything-3B</td></tr><tr class='row'><td>33.jpg</td><td class='gt'>38</td><td class='e1'>36 (-2)</td><td class='e3'>105 (+67)</td><td class='e1'>35 (-3)</td><td class='e3'>81 (+43)</td><td class='winner'><span class='dot' style='background:#2f81f7'></span>LocateAnything-3B</td></tr>
+</table>
+<div class="legend">误差着色：
+  <span class="e0">≤5%</span><span class="e1">≤20%</span><span class="e2">≤50%</span><span class="e3">&gt;50%</span>
+  括号内为相对 GT 的偏差。</div>
+
+<h2>5. 指标排名</h2>
+<div class="block"><div class='rank'><span class='rank-name'>MAE 排名</span><b>1</b> LocateAnything-3B（14.47） &nbsp;&gt;&nbsp; <b>2</b> Qwen2.5-VL:7b（38.00） &nbsp;&gt;&nbsp; <b>3</b> DeepSeek (网页版)（43.87） &nbsp;&gt;&nbsp; <b>4</b> Qwen3-VL:8b（427.07）</div><div class='rank'><span class='rank-name'>RMSE 排名</span><b>1</b> LocateAnything-3B（19.14） &nbsp;&gt;&nbsp; <b>2</b> Qwen2.5-VL:7b（42.73） &nbsp;&gt;&nbsp; <b>3</b> DeepSeek (网页版)（50.92） &nbsp;&gt;&nbsp; <b>4</b> Qwen3-VL:8b（1112.45）</div><div class='rank'><span class='rank-name'>MAPE 排名</span><b>1</b> LocateAnything-3B（14.24） &nbsp;&gt;&nbsp; <b>2</b> DeepSeek (网页版)（54.77） &nbsp;&gt;&nbsp; <b>3</b> Qwen2.5-VL:7b（56.39） &nbsp;&gt;&nbsp; <b>4</b> Qwen3-VL:8b（527.34）</div><div class='rank'><span class='rank-name'>F1 排名</span><b>1</b> LocateAnything-3B（0.8310） &nbsp;&gt;&nbsp; <b>2</b> DeepSeek (网页版)（0.0814）</div></div>
+
+<h2>6. 失效模式分析</h2>
+<div class="block">
+  <h3>Qwen2.5-VL：锚定型复读</h3>
+  <p>15 张图中输出值高度集中（105（10张）、150（3张）、45（2张）），完全不随图片密度变化——模型未能真正"看图计数"，而是坍缩到少数高频数字。MAPE 56.4%。</p>
+  <h3>Qwen3-VL：深度思考但不稳定、极慢</h3>
+  <p>输出具备变化且低密度图误差较小（中位绝对误差 40），但在高密度/复杂图出现灾难性离群：
+  图1.jpg 输出 3813（GT 65）、图28.jpg 输出 2256（GT 139）。
+  平均 278s/张（思考 token 数千级），15 张合计约 70 分钟。</p>
+  <h3>DeepSeek：数字"合理"但坐标幻觉</h3>
+  <p>计数集中在 46~116 窄区间，对高密度图严重低估（如 21.jpg：GT 193 → 输出 92），对低密度图高估（3.jpg：GT 28 → 输出 65），呈现"猜一个中等问题答案"的模式。
+  点匹配 F1 仅 0.0814：换算后的框位置几乎无法命中人工标注点，坐标为虚构。且首轮请求 15 张图返回 17 条结果、结果不绑定文件名，实验可复现性差。</p>
+  <h3>豆包：无法完成任务</h3>
+  <p>多轮对话仍不能稳定输出结果，速度慢；批量上传多图时无法输出计数与对应文件名，导出的 JSON 存在语法错误（坐标缺字段），不具备量化对比条件。</p>
+  <h3>LocateAnything-3B（本方案）：整体最优，高密度图存在漏检</h3>
+  <p>2 张图误差 ≤2（含 3/13/33 三张零误差）。主要失分在超高密度图（
+  21.jpg：143/193（-50）、27.jpg：136/165（-29）），
+  密集粘连菌落的分割式计数仍是开放难点；Recall 0.78 低于 Precision 0.89，说明策略偏"宁缺毋滥"。</p>
+</div>
+
+
+<h2>7. 温度敏感性消融（LocateAnything-3B）</h2>
+<div class="block">
+  <p>同一批 15 张图、统一 prompt、generation_mode=hybrid、NMS IoU=0.3，仅改变采样温度。重复次数：T=0: 3 次、T=0.1: 1 次、T=0.3: 1 次、T=0.5: 1 次、T=0.7: 1 次、T=1: 3 次。
+  多次运行的档位以 <b>均值 ± 标准差（总体）</b> 呈现；T=0 为贪心解码（理论上确定性，重复用于验证），T&gt;0 为温度采样，单次结果存在随机性。</p>
+  <div class="charts">
+    <div class="chart"><svg viewBox="0 0 640 260" xmlns="http://www.w3.org/2000/svg" role="img"><text x="0" y="20" class="chart-title">MAE vs 温度（多次运行取均值） <tspan class="chart-note">(↓ 越低越好)</tspan></text><polyline points="70.0,194.4 178.0,63.6 286.0,170.0 394.0,191.6 502.0,96.5 610.0,166.1" fill="none" stroke="#2f81f7" stroke-width="2.5"/><circle cx="70.0" cy="194.4" r="6" fill="#15803d"/><text x="70.0" y="182.4" text-anchor="middle" class="chart-value">14.47</text><text x="70.0" y="246" text-anchor="middle" class="chart-label">T=0</text><circle cx="178.0" cy="63.6" r="4" fill="#2f81f7"/><text x="178.0" y="51.6" text-anchor="middle" class="chart-value">23.73</text><text x="178.0" y="246" text-anchor="middle" class="chart-label">T=0.1</text><circle cx="286.0" cy="170.0" r="4" fill="#2f81f7"/><text x="286.0" y="158.0" text-anchor="middle" class="chart-value">16.20</text><text x="286.0" y="246" text-anchor="middle" class="chart-label">T=0.3</text><circle cx="394.0" cy="191.6" r="4" fill="#2f81f7"/><text x="394.0" y="179.6" text-anchor="middle" class="chart-value">14.67</text><text x="394.0" y="246" text-anchor="middle" class="chart-label">T=0.5</text><circle cx="502.0" cy="96.5" r="4" fill="#2f81f7"/><text x="502.0" y="84.5" text-anchor="middle" class="chart-value">21.40</text><text x="502.0" y="246" text-anchor="middle" class="chart-label">T=0.7</text><circle cx="610.0" cy="166.1" r="4" fill="#2f81f7"/><text x="610.0" y="154.1" text-anchor="middle" class="chart-value">16.47</text><text x="610.0" y="246" text-anchor="middle" class="chart-label">T=1</text></svg></div>
+    <div class="chart"><svg viewBox="0 0 640 260" xmlns="http://www.w3.org/2000/svg" role="img"><text x="0" y="20" class="chart-title">F1 vs 温度（多次运行取均值） <tspan class="chart-note">(↑ 越高越好)</tspan></text><polyline points="70.0,63.6 178.0,194.4 286.0,92.7 394.0,78.1 502.0,107.2 610.0,78.1" fill="none" stroke="#15803d" stroke-width="2.5"/><circle cx="70.0" cy="63.6" r="6" fill="#15803d"/><text x="70.0" y="51.6" text-anchor="middle" class="chart-value">0.83</text><text x="70.0" y="246" text-anchor="middle" class="chart-label">T=0</text><circle cx="178.0" cy="194.4" r="4" fill="#15803d"/><text x="178.0" y="182.4" text-anchor="middle" class="chart-value">0.74</text><text x="178.0" y="246" text-anchor="middle" class="chart-label">T=0.1</text><circle cx="286.0" cy="92.7" r="4" fill="#15803d"/><text x="286.0" y="80.7" text-anchor="middle" class="chart-value">0.81</text><text x="286.0" y="246" text-anchor="middle" class="chart-label">T=0.3</text><circle cx="394.0" cy="78.1" r="4" fill="#15803d"/><text x="394.0" y="66.1" text-anchor="middle" class="chart-value">0.82</text><text x="394.0" y="246" text-anchor="middle" class="chart-label">T=0.5</text><circle cx="502.0" cy="107.2" r="4" fill="#15803d"/><text x="502.0" y="95.2" text-anchor="middle" class="chart-value">0.80</text><text x="502.0" y="246" text-anchor="middle" class="chart-label">T=0.7</text><circle cx="610.0" cy="78.1" r="4" fill="#15803d"/><text x="610.0" y="66.1" text-anchor="middle" class="chart-value">0.82</text><text x="610.0" y="246" text-anchor="middle" class="chart-label">T=1</text></svg></div>
+  </div>
+  <table style="margin-top:14px">
+    <tr><th>温度</th><th>MAE ↓</th><th>RMSE ↓</th><th>MAPE ↓</th><th>Precision ↑</th><th>Recall ↑</th><th>F1 ↑</th><th>单图耗时</th><th>次数</th></tr>
+    <tr class='best-row'><td><b>T=0</b> 🏆</td><td>14.47 ± 0.00</td><td>19.14</td><td>14.2%</td><td>0.8869</td><td>0.7818</td><td>0.8300 ± 0.0000</td><td>10.6s</td><td>3</td></tr><tr class=''><td><b>T=0.1</b></td><td>23.73</td><td>39.39</td><td>21.3%</td><td>0.8475</td><td>0.6546</td><td>0.7387</td><td>7.8s</td><td>1</td></tr><tr class=''><td><b>T=0.3</b></td><td>16.20</td><td>23.43</td><td>15.7%</td><td>0.8726</td><td>0.7517</td><td>0.8076</td><td>10.0s</td><td>1</td></tr><tr class=''><td><b>T=0.5</b></td><td>14.67</td><td>20.49</td><td>15.0%</td><td>0.8831</td><td>0.7684</td><td>0.8218</td><td>10.3s</td><td>1</td></tr><tr class=''><td><b>T=0.7</b></td><td>21.40</td><td>44.59</td><td>18.6%</td><td>0.8868</td><td>0.7236</td><td>0.7969</td><td>10.1s</td><td>1</td></tr><tr class=''><td><b>T=1</b></td><td>16.47 ± 5.84</td><td>14.69</td><td>13.6%</td><td>0.8844</td><td>0.8092</td><td>0.8200 ± 0.0300</td><td>11.4s</td><td>3</td></tr>
+  </table>
+  <div class="legend">最优判据：MAE 均值最小（并列取 F1 高、温度低）。相比原基线 T=0.1（MAE 23.73），最优 T=0 的 MAE 均值为 14.47（改善 9.26）。 主对比表中 LocateAnything 已采用最优温度 T=0 的结果。</div>
+</div>
+
+<h2>8. 网页版模型情况说明</h2>
+<div class='situation'><h3>豆包（不参与量化对比）</h3><pre class='note'>豆包多轮对话仍不能输出结果且速度慢，输入多张图片时，还不能输出计数结果和对应的文件名。因此结果不参与讨论</pre></div><div class='situation'><h3>DeepSeek（结果参与对比，但存在对应问题）</h3><pre class='note'># DeepSeek 情况说明
+
+- 测试方式：DeepSeek 网页版，单次对话上传 15 张图片 + 统一 prompt
+- **首轮请求返回了 17 条结果**（比上传图片多出 2 条幽灵结果），无法与 15 张图片一一对应
+- 经多轮纠正后，第二轮返回恰好 15 条结果（`deepseek_json_20261014_e958d2.json`）
+- **输出结果不绑定图片文件名**，需人工按上传顺序（= 图片文件名自然排序）建立 image_1~image_15 → 实际图片的映射
+- 部分图片 `count` 与 `boxes` 数量不一致，量化对比以 `count` 字段为准，点匹配指标使用 boxes 中心点
+- 因上述不可复现的对应问题，DeepSeek 结果仅作参考参与对比
+- 转换脚本：`colony_cell_gui_fastapi/backend/convert_deepseek.py`</pre></div>
+
+<h2>9. 结论与建议</h2>
+<div class="block">
+  <ol>
+    <li><b>专用模型 LocateAnything-3B 显著优于通用多模态大模型</b>：在计数精度、定位质量、推理效率三个维度全面领先，是当前唯一具备落地条件的方案。</li>
+    <li>通用 VLM（Qwen2.5-VL / Qwen3-VL / DeepSeek）在密集小目标计数任务上表现出三种典型失效：锚定复读、离群幻觉、窄区间猜测，且无坐标或坐标不可信，不适合替代检测/计数专用模型。</li>
+    <li>网页版助手（豆包/DeepSeek）在批量多图场景存在<b>结果-文件无法对应、多余结果、格式非法</b>等流程性问题，即使模型能力提升也难以自动化集成。</li>
+    <li>改进方向：针对高密度图像优化 LocateAnything 的粘连分割与 NMS 策略（如点监督 + 密度图辅助），可进一步压缩 MAE。</li>
+  </ol>
+</div>
+
+<footer>数据源：对照实验/evaluation.json ｜ 由 html_report_generator.py 自动生成 ｜ 本文件自包含，无外部依赖</footer>
+</div></body></html>

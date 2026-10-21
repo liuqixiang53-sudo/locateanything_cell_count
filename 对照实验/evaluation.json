@@ -1,0 +1,362 @@
+{
+  "deepseek": {
+    "mae": 43.87,
+    "rmse": 50.92,
+    "mape": 54.77,
+    "precision": 0.092,
+    "recall": 0.073,
+    "f1": 0.0814,
+    "total_tp": 109,
+    "total_fp": 1076,
+    "total_fn": 1385,
+    "avg_elapsed": 0.0,
+    "success_rate": 100.0,
+    "per_image": {
+      "13": {
+        "gt": 50,
+        "pred": 96,
+        "error": 46
+      },
+      "8": {
+        "gt": 119,
+        "pred": 105,
+        "error": -14
+      },
+      "28": {
+        "gt": 139,
+        "pred": 103,
+        "error": -36
+      },
+      "32": {
+        "gt": 53,
+        "pred": 82,
+        "error": 29
+      },
+      "15": {
+        "gt": 64,
+        "pred": 85,
+        "error": 21
+      },
+      "27": {
+        "gt": 165,
+        "pred": 116,
+        "error": -49
+      },
+      "14": {
+        "gt": 48,
+        "pred": 100,
+        "error": 52
+      },
+      "21": {
+        "gt": 193,
+        "pred": 92,
+        "error": -101
+      },
+      "3": {
+        "gt": 28,
+        "pred": 65,
+        "error": 37
+      },
+      "26": {
+        "gt": 192,
+        "pred": 96,
+        "error": -96
+      },
+      "1": {
+        "gt": 65,
+        "pred": 46,
+        "error": -19
+      },
+      "2": {
+        "gt": 41,
+        "pred": 48,
+        "error": 7
+      },
+      "33": {
+        "gt": 38,
+        "pred": 81,
+        "error": 43
+      },
+      "18": {
+        "gt": 147,
+        "pred": 90,
+        "error": -57
+      },
+      "25": {
+        "gt": 152,
+        "pred": 101,
+        "error": -51
+      }
+    }
+  },
+  "locateanything": {
+    "mae": 14.47,
+    "rmse": 19.14,
+    "mape": 14.24,
+    "precision": 0.8869,
+    "recall": 0.7818,
+    "f1": 0.831,
+    "total_tp": 1168,
+    "total_fp": 149,
+    "total_fn": 326,
+    "avg_elapsed": 10.6,
+    "success_rate": 100.0,
+    "per_image": {
+      "13": {
+        "gt": 50,
+        "pred": 54,
+        "error": 4
+      },
+      "8": {
+        "gt": 119,
+        "pred": 114,
+        "error": -5
+      },
+      "28": {
+        "gt": 139,
+        "pred": 148,
+        "error": 9
+      },
+      "32": {
+        "gt": 53,
+        "pred": 60,
+        "error": 7
+      },
+      "15": {
+        "gt": 64,
+        "pred": 41,
+        "error": -23
+      },
+      "27": {
+        "gt": 165,
+        "pred": 136,
+        "error": -29
+      },
+      "14": {
+        "gt": 48,
+        "pred": 41,
+        "error": -7
+      },
+      "21": {
+        "gt": 193,
+        "pred": 143,
+        "error": -50
+      },
+      "3": {
+        "gt": 28,
+        "pred": 28,
+        "error": 0
+      },
+      "26": {
+        "gt": 192,
+        "pred": 169,
+        "error": -23
+      },
+      "1": {
+        "gt": 65,
+        "pred": 51,
+        "error": -14
+      },
+      "2": {
+        "gt": 41,
+        "pred": 30,
+        "error": -11
+      },
+      "33": {
+        "gt": 38,
+        "pred": 36,
+        "error": -2
+      },
+      "18": {
+        "gt": 147,
+        "pred": 128,
+        "error": -19
+      },
+      "25": {
+        "gt": 152,
+        "pred": 138,
+        "error": -14
+      }
+    }
+  },
+  "ollama_qwen25vl": {
+    "mae": 38.0,
+    "rmse": 42.73,
+    "mape": 56.39,
+    "precision": null,
+    "recall": null,
+    "f1": null,
+    "total_tp": 0,
+    "total_fp": 0,
+    "total_fn": 0,
+    "avg_elapsed": 31.77,
+    "success_rate": 100.0,
+    "per_image": {
+      "13": {
+        "gt": 50,
+        "pred": 105,
+        "error": 55
+      },
+      "8": {
+        "gt": 119,
+        "pred": 105,
+        "error": -14
+      },
+      "28": {
+        "gt": 139,
+        "pred": 105,
+        "error": -34
+      },
+      "32": {
+        "gt": 53,
+        "pred": 105,
+        "error": 52
+      },
+      "15": {
+        "gt": 64,
+        "pred": 105,
+        "error": 41
+      },
+      "27": {
+        "gt": 165,
+        "pred": 105,
+        "error": -60
+      },
+      "14": {
+        "gt": 48,
+        "pred": 105,
+        "error": 57
+      },
+      "21": {
+        "gt": 193,
+        "pred": 150,
+        "error": -43
+      },
+      "3": {
+        "gt": 28,
+        "pred": 45,
+        "error": 17
+      },
+      "26": {
+        "gt": 192,
+        "pred": 150,
+        "error": -42
+      },
+      "1": {
+        "gt": 65,
+        "pred": 105,
+        "error": 40
+      },
+      "2": {
+        "gt": 41,
+        "pred": 45,
+        "error": 4
+      },
+      "33": {
+        "gt": 38,
+        "pred": 105,
+        "error": 67
+      },
+      "18": {
+        "gt": 147,
+        "pred": 105,
+        "error": -42
+      },
+      "25": {
+        "gt": 152,
+        "pred": 150,
+        "error": -2
+      }
+    }
+  },
+  "ollama_qwen3vl": {
+    "mae": 427.07,
+    "rmse": 1112.45,
+    "mape": 527.34,
+    "precision": null,
+    "recall": null,
+    "f1": null,
+    "total_tp": 0,
+    "total_fp": 0,
+    "total_fn": 0,
+    "avg_elapsed": 278.21,
+    "success_rate": 100.0,
+    "per_image": {
+      "13": {
+        "gt": 50,
+        "pred": 10,
+        "error": -40
+      },
+      "8": {
+        "gt": 119,
+        "pred": 47,
+        "error": -72
+      },
+      "28": {
+        "gt": 139,
+        "pred": 2256,
+        "error": 2117
+      },
+      "32": {
+        "gt": 53,
+        "pred": 12,
+        "error": -41
+      },
+      "15": {
+        "gt": 64,
+        "pred": 50,
+        "error": -14
+      },
+      "27": {
+        "gt": 165,
+        "pred": 75,
+        "error": -90
+      },
+      "14": {
+        "gt": 48,
+        "pred": 10,
+        "error": -38
+      },
+      "21": {
+        "gt": 193,
+        "pred": 98,
+        "error": -95
+      },
+      "3": {
+        "gt": 28,
+        "pred": 14,
+        "error": -14
+      },
+      "26": {
+        "gt": 192,
+        "pred": 185,
+        "error": -7
+      },
+      "1": {
+        "gt": 65,
+        "pred": 3813,
+        "error": 3748
+      },
+      "2": {
+        "gt": 41,
+        "pred": 12,
+        "error": -29
+      },
+      "33": {
+        "gt": 38,
+        "pred": 35,
+        "error": -3
+      },
+      "18": {
+        "gt": 147,
+        "pred": 78,
+        "error": -69
+      },
+      "25": {
+        "gt": 152,
+        "pred": 123,
+        "error": -29
+      }
+    }
+  }
+}

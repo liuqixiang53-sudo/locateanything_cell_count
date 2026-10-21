@@ -1,0 +1,10 @@
+{
+  "image": "26.jpg",
+  "model": "Qwen2.5-VL:7b",
+  "count": 150,
+  "raw_count": 150,
+  "points": [],
+  "raw_response": "150",
+  "elapsed": 34.1951858997345,
+  "has_coordinates": false
+}

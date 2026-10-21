@@ -1,0 +1,7 @@
+{
+  "image_path": "./image/counting_task_test5.png",
+  "count": 0,
+  "boxes": [],
+  "answer": "",
+  "stats": "{'ollama_inference_time': 120.10515880584717, 'model': 'qwen3.5:9b'}"
+}

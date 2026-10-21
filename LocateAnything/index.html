@@ -1,0 +1,1069 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NVIDIA LocateAnything - Fast Vision-Language Grounding</title>
+    
+    <!-- Premium Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800;900&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+    
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        outfit: ['Outfit', 'sans-serif'],
+                        mono: ['Fira Code', 'monospace'],
+                    },
+                    colors: {
+                        nvidia: {
+                            light: '#76b900',
+                            brand: '#76b900',
+                            dark: '#5c9000',
+                            hover: '#87d300',
+                        },
+                        dark: {
+                            50: '#222222',
+                            100: '#1a1a1a',
+                            200: '#121212',
+                            300: '#0a0a0a',
+                            400: '#050505',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body {
+            background-color: #050505;
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(118, 185, 0, 0.08) 0%, transparent 45%),
+                radial-gradient(circle at 90% 80%, rgba(99, 102, 241, 0.05) 0%, transparent 45%);
+            background-attachment: fixed;
+        }
+
+        /* NVIDIA-style Carbon Triangle Grid Pattern */
+        .carbon-grid {
+            background-image: 
+                linear-gradient(30deg, #0f0f0f 12%, transparent 12.5%, transparent 87%, #0f0f0f 87.5%, #0f0f0f),
+                linear-gradient(150deg, #0f0f0f 12%, transparent 12.5%, transparent 87%, #0f0f0f 87.5%, #0f0f0f),
+                linear-gradient(30deg, #0f0f0f 12%, transparent 12.5%, transparent 87%, #0f0f0f 87.5%, #0f0f0f),
+                linear-gradient(150deg, #0f0f0f 12%, transparent 12.5%, transparent 87%, #0f0f0f 87.5%, #0f0f0f),
+                linear-gradient(60deg, #171717 25%, transparent 25.5%, transparent 75%, #171717 75.5%, #171717),
+                linear-gradient(60deg, #171717 25%, transparent 25.5%, transparent 75%, #171717 75.5%, #171717);
+            background-size: 80px 140px;
+            background-position: 0 0, 0 0, 40px 70px, 40px 70px, 0 0, 40px 70px;
+        }
+
+        /* Glassmorphism Styles */
+        .glass-panel {
+            background: rgba(18, 18, 18, 0.65);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.04);
+            box-shadow: 0 24px 64px 0 rgba(0, 0, 0, 0.7);
+        }
+
+        .glass-panel-interactive {
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .glass-panel-interactive:hover {
+            border-color: rgba(118, 185, 0, 0.25);
+            box-shadow: 0 30px 80px 0 rgba(118, 185, 0, 0.08);
+            transform: translateY(-2px);
+        }
+
+        /* SAM 3 Style Glassmorphic Float Input */
+        .sam-input-bar {
+            background: rgba(255, 255, 255, 0.06);
+            backdrop-filter: blur(25px);
+            -webkit-backdrop-filter: blur(25px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .sam-input-bar:focus-within {
+            background: rgba(255, 255, 255, 0.09);
+            border-color: rgba(118, 185, 0, 0.6);
+            box-shadow: 0 20px 48px rgba(118, 185, 0, 0.15);
+        }
+
+        /* Hexagonal Glowing Border for Media Workspace (NVIDIA GTC Keynote Style) */
+        .gtc-polygon-wrapper {
+            position: relative;
+            background: #0f1218;
+            border: 1px solid rgba(118, 185, 0, 0.15);
+            box-shadow: 0 0 50px rgba(0, 0, 0, 0.8);
+            overflow: hidden;
+            clip-path: polygon(8% 0%, 100% 0%, 100% 92%, 92% 100%, 0% 100%, 0% 8%);
+        }
+        .gtc-polygon-wrapper::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border: 2px solid #76b900;
+            pointer-events: none;
+            clip-path: polygon(8% 0%, 100% 0%, 100% 92%, 92% 100%, 0% 100%, 0% 8%);
+            opacity: 0.8;
+            box-shadow: inset 0 0 20px rgba(118, 185, 0, 0.3);
+        }
+
+        .gtc-neon-border {
+            position: absolute;
+            top: -2px;
+            left: -2px;
+            right: -2px;
+            bottom: -2px;
+            background: linear-gradient(135deg, #76b900, #3f6200, #76b900);
+            z-index: 0;
+            pointer-events: none;
+            opacity: 0.95;
+            clip-path: polygon(8% 0%, 100% 0%, 100% 92%, 92% 100%, 0% 100%, 0% 8%);
+        }
+
+        .gtc-inner-box {
+            position: relative;
+            background: #080a0e;
+            z-index: 10;
+            height: 100%;
+            clip-path: polygon(8.1% 0.1%, 99.9% 0.1%, 99.9% 91.9%, 91.9% 99.9%, 0.1% 99.9%, 0.1% 8.1%);
+        }
+
+        /* Pill Buttons styling */
+        .pill-btn-green {
+            background-color: #76b900;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .pill-btn-green:hover {
+            background-color: #87d300;
+            box-shadow: 0 0 24px rgba(118, 185, 0, 0.45);
+            transform: translateY(-1px);
+        }
+        .pill-btn-green:active {
+            transform: translateY(1px);
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0a0a0a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #222;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #333;
+        }
+
+        /* Pulse loaders */
+        .dot-pulse {
+            animation: pulse 1.4s infinite ease-in-out;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 0.3; transform: scale(0.9); }
+            50% { opacity: 1; transform: scale(1.1); }
+        }
+
+        .drop-zone-active {
+            border-color: #76b900 !important;
+            background: rgba(118, 185, 0, 0.04) !important;
+        }
+
+        /* Detection overlay tag pop-in (restored from previous demo) */
+        @keyframes det-pop {
+            0%   { opacity: 0; transform: translateY(10px) scale(0.88); }
+            60%  { opacity: 1; transform: translateY(-2px) scale(1.03); }
+            100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .det-tag-pop {
+            opacity: 0;
+            animation: det-pop 0.38s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        .det-count-pop {
+            animation: det-pop 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        /* Detected overlays: fixed height, internal scroll */
+        .detection-scroll {
+            min-height: 0;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            scroll-behavior: smooth;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(118, 185, 0, 0.45) rgba(0, 0, 0, 0.2);
+            mask-image: linear-gradient(to bottom, black 88%, transparent 100%);
+            -webkit-mask-image: linear-gradient(to bottom, black 88%, transparent 100%);
+        }
+        .detection-scroll::-webkit-scrollbar {
+            width: 5px;
+        }
+        .detection-scroll::-webkit-scrollbar-thumb {
+            background: rgba(118, 185, 0, 0.45);
+            border-radius: 999px;
+        }
+    </style>
+</head>
+<body class="text-slate-100 font-sans min-h-screen pb-16 carbon-grid">
+
+    <!-- NVIDIA Brand Navigation Header (Transparent dark blur) -->
+    <nav class="bg-black/40 backdrop-blur-md sticky top-0 z-50 px-6 py-3.5 border-b border-white/5 shadow-lg">
+        <div class="max-w-[1600px] mx-auto flex items-center justify-between">
+            <!-- Official Styled NVIDIA Brand Text Logo -->
+            <a href="#" class="flex items-center gap-1.5 select-none group">
+                <svg class="h-6 w-6 text-nvidia-brand transition-transform duration-500 group-hover:rotate-180" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+                <span class="font-outfit text-[22px] font-black tracking-tighter text-white">
+                    NVIDIA <span class="font-light tracking-wide text-slate-400">LocateAnything</span>
+                </span>
+            </a>
+
+            <span class="px-3 py-1 text-xs font-semibold rounded bg-nvidia-brand/10 text-nvidia-brand border border-nvidia-brand/20 flex items-center gap-1.5 font-mono">
+                <span class="h-1.5 w-1.5 rounded-full bg-nvidia-brand animate-pulse"></span>
+                ZeroGPU Server
+            </span>
+        </div>
+    </nav>
+
+    <!-- MAIN MINIMAL LAYOUT CONTAINER -->
+    <main class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 pt-8 lg:pt-10 space-y-8">
+        
+        <!-- Giant Showcase Container (SAM 3 Full-Bleed Style) -->
+        <div class="relative w-full rounded-[32px] overflow-hidden border border-white/5 bg-[#080a0e] shadow-2xl h-[580px] lg:h-[640px] flex select-none">
+            
+            <!-- 1. Dedicated Media Canvas (offset right of the control panel on desktop) -->
+            <div class="absolute inset-y-0 right-0 left-0 lg:left-[440px] z-0 flex items-center justify-center bg-black/40 lg:border-l lg:border-white/10">
+                <!-- Drop Zone (Initially shown) -->
+                <div id="drop-zone" class="absolute inset-0 border-none rounded-none bg-transparent flex flex-col items-center justify-center p-4 text-center cursor-pointer transition-all z-10">
+                    <div id="upload-prompt" class="space-y-3 opacity-60 hover:opacity-100 transition-opacity">
+                        <div class="inline-flex h-12 w-12 rounded-full bg-white/5 items-center justify-center text-slate-300">
+                            <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                            </svg>
+                        </div>
+                        <div>
+                            <p class="text-xs font-bold text-slate-200">Drag & drop your file here</p>
+                            <p class="text-[10px] text-slate-500 mt-1">or click to browse local folders</p>
+                        </div>
+                    </div>
+
+                    <!-- Dynamic Preview Media -->
+                    <img id="preview-image" src="" alt="Input Preview" class="hidden max-h-full max-w-full rounded-2xl object-contain shadow-2xl z-20 border border-white/5">
+                    <video id="preview-video" src="" controls class="hidden max-h-full max-w-full rounded-2xl object-contain shadow-2xl z-20 border border-white/5"></video>
+
+                    <!-- File Input -->
+                    <input type="file" id="media-file-input" accept="image/*,video/*" class="absolute inset-0 opacity-0 cursor-pointer z-30">
+                </div>
+
+                <!-- Inference Output Zone -->
+                <div class="absolute inset-0 pointer-events-none flex items-center justify-center z-20">
+                    <img id="output-image" src="" alt="Inference Output" class="hidden max-h-full max-w-full rounded-2xl object-contain shadow-2xl pointer-events-auto border border-white/5">
+                    <video id="output-video" src="" controls class="hidden max-h-full max-w-full rounded-2xl object-contain shadow-2xl pointer-events-auto border border-white/5"></video>
+                </div>
+
+                <!-- Processing Overlays -->
+                <div id="processing-overlay" class="absolute inset-0 bg-black/85 backdrop-blur-sm hidden flex-col items-center justify-center gap-4 z-40">
+                    <div class="flex gap-1.5">
+                        <span class="dot-pulse inline-block h-3 w-3 rounded-full bg-nvidia-brand" style="animation-delay: 0s;"></span>
+                        <span class="dot-pulse inline-block h-3 w-3 rounded-full bg-emerald-400" style="animation-delay: 0.2s;"></span>
+                        <span class="dot-pulse inline-block h-3 w-3 rounded-full bg-emerald-300" style="animation-delay: 0.4s;"></span>
+                    </div>
+                    <div class="text-center space-y-1">
+                        <p id="processing-status" class="text-[11px] font-bold tracking-widest text-slate-200 uppercase">Executing Model...</p>
+                        <p class="text-[9px] text-slate-500 uppercase tracking-wider font-mono">ZeroGPU Queue Active</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2. Left Control Panel (Title, simple selectors, accordion, and action buttons) -->
+            <div class="absolute left-6 top-8 bottom-8 z-30 flex flex-col justify-between w-[380px] max-w-[calc(100%-3rem)] pointer-events-none">
+                
+                <!-- Main Header Overlay text -->
+                <div class="space-y-3 pt-4 pointer-events-auto bg-gradient-to-b from-[#080a0e]/90 via-[#080a0e]/60 to-transparent p-4 rounded-2xl">
+                    <span class="text-[9px] font-bold text-nvidia-brand uppercase tracking-widest block font-mono">AI Research from NVIDIA</span>
+                    <h1 class="font-outfit text-3xl sm:text-5xl font-black tracking-tight text-white leading-none">
+                        Locate<span class="text-nvidia-brand font-light">Anything</span>
+                    </h1>
+                    <p class="text-xs text-slate-400 max-w-sm font-medium leading-relaxed">
+                        NVIDIA's advanced 3B vision-language model. Locate any object, UI target, or text in images and videos with natural language.
+                    </p>
+                    <p class="text-[9px] text-slate-500 max-w-sm leading-relaxed border-l-2 border-nvidia-brand/30 pl-2.5">
+                        Note: inputs larger than 1K are auto-resized in this Space demo. For full-resolution inference, download the weights and run locally.
+                    </p>
+                </div>
+
+                <!-- Setup Glass Card Controls -->
+                <div class="glass-panel rounded-2xl p-4 space-y-4 pointer-events-auto max-w-xs shadow-2xl">
+                    <div class="grid grid-cols-2 gap-3">
+                        
+                        <!-- Media Type toggle selection -->
+                        <div class="space-y-1">
+                            <label class="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Media Type</label>
+                            <div class="grid grid-cols-2 gap-0.5 bg-black/40 p-0.5 rounded-lg border border-white/5 text-center">
+                                <button id="media-type-image" class="py-1 rounded-md font-semibold text-[9px] transition-all bg-nvidia-brand text-black font-outfit font-black shadow shadow-nvidia-brand/10">
+                                    Image
+                                </button>
+                                <button id="media-type-video" class="py-1 rounded-md font-semibold text-[9px] text-slate-400 hover:text-slate-200 transition-all">
+                                    Video
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Task Selector -->
+                        <div class="space-y-1">
+                            <label for="task-type" class="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Task Type</label>
+                            <select id="task-type" class="w-full bg-black/40 border border-white/5 rounded-lg px-2 py-1 text-[9px] focus:border-nvidia-brand focus:outline-none transition-all text-slate-200 font-semibold">
+                                <option value="Detection">Detection</option>
+                                <option value="Grounding">Grounding</option>
+                                <option value="OCR">OCR</option>
+                                <option value="GUI">GUI</option>
+                                <option value="Pointing">Pointing</option>
+                            </select>
+                        </div>
+
+                    </div>
+
+                    <!-- Advanced parameters sliders (Collapsible details inside the left overlay) -->
+                    <details class="group border-t border-white/5 pt-3">
+                        <summary class="list-none flex justify-between items-center cursor-pointer select-none text-[8px] font-bold text-slate-400 tracking-wider uppercase hover:text-slate-200 transition-colors">
+                            <span>⚙️ Advanced parameters</span>
+                            <svg class="h-3 w-3 transform group-open:rotate-180 transition-transform text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </summary>
+                        <div class="space-y-3 pt-3">
+                            
+                            <!-- Inference Mode Selection -->
+                            <div class="space-y-1">
+                                <label for="inference-mode" class="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Inference Mode</label>
+                                <select id="inference-mode" class="w-full bg-black/40 border border-white/5 rounded-lg px-2 py-1 text-[9px] focus:border-nvidia-brand focus:outline-none transition-all text-slate-200">
+                                    <option value="hybrid">Hybrid</option>
+                                    <option value="fast">Fast</option>
+                                    <option value="slow">Slow</option>
+                                </select>
+                            </div>
+
+                            <!-- Short side resize cap -->
+                            <div class="space-y-1">
+                                <label for="short-size" class="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Resize Cap (px)</label>
+                                <input type="number" id="short-size" placeholder="Auto-Cap (1024)" class="w-full bg-black/40 border border-white/5 rounded-lg px-2 py-1 text-[9px] focus:border-nvidia-brand focus:outline-none transition-all text-slate-200 font-mono">
+                            </div>
+
+                            <!-- Temp -->
+                            <div class="space-y-1">
+                                <div class="flex justify-between text-[8px] uppercase font-bold text-slate-400 tracking-wider">
+                                    <span>Temperature</span>
+                                    <span id="temp-val" class="font-mono text-nvidia-brand">0.7</span>
+                                </div>
+                                <input type="range" id="temp" min="0.1" max="2.0" step="0.1" value="0.7" class="w-full h-0.5 bg-black rounded appearance-none cursor-pointer accent-nvidia-brand">
+                            </div>
+
+                            <!-- Top P -->
+                            <div class="space-y-1">
+                                <div class="flex justify-between text-[8px] uppercase font-bold text-slate-400 tracking-wider">
+                                    <span>Top P</span>
+                                    <span id="topp-val" class="font-mono text-nvidia-brand">0.9</span>
+                                </div>
+                                <input type="range" id="topp" min="0.05" max="1.0" step="0.05" value="0.9" class="w-full h-0.5 bg-black rounded appearance-none cursor-pointer accent-nvidia-brand">
+                            </div>
+
+                            <!-- Top K -->
+                            <div class="space-y-1">
+                                <div class="flex justify-between text-[8px] uppercase font-bold text-slate-400 tracking-wider">
+                                    <span>Top K</span>
+                                    <span id="topk-val" class="font-mono text-nvidia-brand">20</span>
+                                </div>
+                                <input type="range" id="topk" min="1" max="100" step="1" value="20" class="w-full h-0.5 bg-black rounded appearance-none cursor-pointer accent-nvidia-brand">
+                            </div>
+
+                            <!-- Video Frames (Only displayed for Video mode) -->
+                            <div id="video-frames-wrapper" class="space-y-1 opacity-50 pointer-events-none transition-opacity duration-300">
+                                <div class="flex justify-between text-[8px] uppercase font-bold text-slate-400 tracking-wider">
+                                    <span>Max Video Frames</span>
+                                    <span id="frames-val" class="font-mono text-nvidia-brand">4</span>
+                                </div>
+                                <input type="range" id="max-frames" min="1" max="10" step="1" value="4" class="w-full h-0.5 bg-black rounded appearance-none cursor-pointer accent-nvidia-brand" disabled>
+                            </div>
+
+                        </div>
+                    </details>
+
+                    <!-- Quick Start Guide -->
+                    <details class="group border-t border-white/5 pt-3" open>
+                        <summary class="list-none flex justify-between items-center cursor-pointer select-none text-[8px] font-bold text-nvidia-brand tracking-wider uppercase hover:text-nvidia-hover transition-colors">
+                            <span>📖 How to Use</span>
+                            <svg class="h-3 w-3 transform group-open:rotate-180 transition-transform text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </summary>
+                        <ol class="space-y-1.5 pt-2.5 text-[9px] text-slate-400 leading-relaxed list-decimal list-inside marker:text-nvidia-brand/70">
+                            <li>Upload an <strong class="text-slate-300">Image</strong> or <strong class="text-slate-300">Video</strong>, or pick a Quick Sandbox example below.</li>
+                            <li>Choose a <strong class="text-slate-300">Task Type</strong>: Detection · Grounding · OCR · GUI · Pointing.</li>
+                            <li>Enter <strong class="text-slate-300">Categories</strong> in the search bar (comma-separated, e.g. <code class="text-nvidia-brand/80">car, person</code>).</li>
+                            <li>Optionally tune <strong class="text-slate-300">Advanced parameters</strong> above (mode, resize, temperature, etc.).</li>
+                            <li>Click <strong class="text-nvidia-brand">Run Inference</strong> or press <kbd class="px-1 py-0.5 rounded bg-white/5 border border-white/10 text-[8px]">Enter</kbd> in the search bar.</li>
+                        </ol>
+                    </details>
+                </div>
+
+                <!-- CTA Action Button (Floats at bottom-left corner of visual container) -->
+                <div class="pointer-events-auto pt-2 max-w-xs">
+                    <button id="run-btn" class="pill-btn-green w-full py-3 px-6 rounded-full text-black font-extrabold text-sm flex items-center justify-center gap-2 select-none shadow-2xl">
+                        <span id="btn-icon">🧠</span>
+                        <span id="btn-text">Run Inference</span>
+                    </button>
+                </div>
+
+            </div>
+
+            <!-- 3. Floating Categories Search Bar (bottom-center of the dedicated image zone) -->
+            <div class="absolute bottom-6 left-0 right-0 lg:left-[440px] z-30 flex flex-col items-center gap-2 px-6 pointer-events-none">
+                <div class="sam-input-bar rounded-2xl px-3.5 py-2.5 flex items-center gap-2 w-full max-w-md pointer-events-auto">
+                    <svg class="h-4 w-4 text-nvidia-brand shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                    <input type="text" id="categories" value="car, bus, person, potted plant" placeholder="Describe objects to locate..." class="bg-transparent border-none outline-none focus:outline-none w-full text-slate-100 placeholder-slate-600 font-semibold text-xs">
+                    <button id="clear-search-btn" class="text-slate-500 hover:text-white transition-colors p-0.5 rounded-full hover:bg-white/5 shrink-0">
+                        <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+                <p class="text-[9px] text-slate-500 text-center leading-relaxed pointer-events-none px-1 max-w-md">
+                    Comma-separated targets · supports English &amp; Chinese · press <span class="text-slate-400">Enter</span> to run
+                </p>
+            </div>
+
+            <!-- Floating Workspace Status (top-right of the image zone) -->
+            <div class="absolute top-4 right-4 z-30 bg-black/60 backdrop-blur px-2.5 py-1 rounded-lg border border-white/10 text-[9px] text-slate-400 font-mono select-none pointer-events-none">
+                status: <span id="workspace-status" class="text-slate-200 font-semibold">No Media Loaded</span>
+            </div>
+
+        </div>
+
+        <!-- Shelf Section (Examples and Log metrics placed directly below the giant showcase) -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            
+            <!-- Left: Examples Library Shelf (Col Span: 5) -->
+            <div class="lg:col-span-5 space-y-4">
+                <div class="glass-panel rounded-2xl p-5 space-y-4">
+                    <span class="text-[9px] font-bold text-slate-400 uppercase tracking-widest block font-mono">🖼️ Interactive Quick Sandbox</span>
+                    <div class="grid grid-cols-4 gap-3">
+                        
+                        <!-- Card 1 -->
+                        <div class="example-card border border-white/5 rounded-xl p-1 cursor-pointer group space-y-1 bg-black/35 hover:border-nvidia-brand/20 transition-all text-center" data-type="Image" data-name="Book" data-category="book" data-task="Detection" data-mode="hybrid" data-asset="assets/book.jpg">
+                            <div class="h-12 w-full rounded-lg bg-cover bg-center overflow-hidden bg-slate-900" style="background-image: url('/assets/book.jpg');"></div>
+                            <span class="text-[9px] font-semibold text-slate-300 block truncate">Book</span>
+                        </div>
+
+                        <!-- Card 2 -->
+                        <div class="example-card border border-white/5 rounded-xl p-1 cursor-pointer group space-y-1 bg-black/35 hover:border-nvidia-brand/20 transition-all text-center" data-type="Image" data-name="Sushi" data-category="sushi" data-task="Detection" data-mode="hybrid" data-asset="assets/sweet.jpg">
+                            <div class="h-12 w-full rounded-lg bg-cover bg-center overflow-hidden bg-slate-900" style="background-image: url('/assets/sweet.jpg');"></div>
+                            <span class="text-[9px] font-semibold text-slate-300 block truncate">Sushi</span>
+                        </div>
+
+                        <!-- Card 3 -->
+                        <div class="example-card border border-white/5 rounded-xl p-1 cursor-pointer group space-y-1 bg-black/35 hover:border-nvidia-brand/20 transition-all text-center" data-type="Image" data-name="Person" data-category="person" data-task="Detection" data-mode="hybrid" data-asset="assets/person.jpg">
+                            <div class="h-12 w-full rounded-lg bg-cover bg-center overflow-hidden bg-slate-900" style="background-image: url('/assets/person.jpg');"></div>
+                            <span class="text-[9px] font-semibold text-slate-300 block truncate">People</span>
+                        </div>
+
+                        <!-- Card 4 -->
+                        <div class="example-card border border-white/5 rounded-xl p-1 cursor-pointer group space-y-1 bg-black/35 hover:border-nvidia-brand/20 transition-all text-center" data-type="Image" data-name="OCR" data-category="text" data-task="OCR" data-mode="slow" data-asset="assets/ocr.jpg">
+                            <div class="h-12 w-full rounded-lg bg-cover bg-center overflow-hidden bg-slate-900" style="background-image: url('/assets/ocr.jpg');"></div>
+                            <span class="text-[9px] font-semibold text-slate-300 block truncate">OCR</span>
+                        </div>
+
+                    </div>
+                </div>
+
+                <!-- Text Prompt logs -->
+                <div class="glass-panel rounded-2xl p-4 text-[10px] text-slate-500 font-mono flex justify-between items-center select-none bg-black/40">
+                    <span class="truncate block">compiled: <span id="raw-prompt-preview" class="text-slate-400"></span></span>
+                </div>
+            </div>
+
+            <!-- Right: Performance Metrics & Tag draw overlays (Col Span: 7) -->
+            <div class="lg:col-span-7 space-y-4">
+                <div class="glass-panel rounded-2xl p-5 space-y-4">
+                    <div class="grid grid-cols-1 sm:grid-cols-12 gap-4 items-start">
+                        
+                        <!-- Performance Statistics Metrics Console (Grid: 5) -->
+                        <div class="sm:col-span-5 bg-black/60 rounded-xl p-4 border border-white/5 font-mono text-[10px] text-slate-300 space-y-2 leading-normal h-[168px]">
+                            <div class="text-nvidia-brand font-bold border-b border-white/5 pb-1 mb-1.5 uppercase tracking-widest text-[9px] font-mono">📊 Metrics Log</div>
+                            <div class="flex justify-between"><span class="text-slate-500">Status:</span> <span id="meta-status" class="text-emerald-500 font-semibold">Idle</span></div>
+                            <div class="flex justify-between"><span class="text-slate-500">Tokens/Frames:</span> <span id="meta-tokens">-</span></div>
+                            <div class="flex justify-between"><span class="text-slate-500">Detections:</span> <span id="meta-boxes">-</span></div>
+                            <div class="flex justify-between"><span class="text-slate-500">TPS / BPS:</span> <span><span id="meta-tps">-</span> / <span id="meta-bps">-</span></span></div>
+                            <div class="flex justify-between"><span class="text-slate-500">Time:</span> <span id="meta-time">-</span></div>
+                        </div>
+
+                        <!-- Tag drawer box list (Grid: 7) -->
+                        <div class="sm:col-span-7 bg-black/60 rounded-xl p-4 border border-white/5 flex flex-col h-[168px] overflow-hidden">
+                            <div class="text-nvidia-brand font-mono font-bold border-b border-white/5 pb-1 mb-2 uppercase tracking-widest text-[9px] flex justify-between shrink-0">
+                                <span>🎯 Detected Target Overlays</span>
+                                <span id="detection-count-badge" class="text-[8px] bg-nvidia-brand/10 text-nvidia-brand border border-nvidia-brand/20 px-1.5 py-0.5 rounded-full font-bold">0</span>
+                            </div>
+                            <div id="detection-tags-wrapper" class="detection-scroll flex-1 flex flex-col gap-1.5 pt-1 text-[10px] text-slate-500">
+                                <div id="detection-empty-hint" class="space-y-1.5 leading-relaxed">
+                                    <p>Run inference to populate detected targets here — each result will pop in one by one.</p>
+                                    <p class="text-[9px] text-slate-600">Adjustable: Task Type · Categories · Inference Mode · Resize Cap · Temperature · Top P/K · Max Video Frames</p>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Full-width Decoding Trace (always visible, no nested scroll) -->
+        <div id="rich-trace-section" class="glass-panel rounded-2xl p-5">
+            <div id="rich-trace-log" class="text-[10px]">
+                <div class="rounded-xl border border-dashed border-white/10 bg-black/30 p-6 text-center text-[10px] text-slate-500 leading-relaxed">
+                    <p class="text-slate-400 font-semibold mb-1">Decoding Trace</p>
+                    <p>Run inference to watch model tokens pop in here — ref labels, box coords, and stats shown in full without scrolling sideways.</p>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Gradio client connection & app runtime logic -->
+    <script type="module">
+        import { client, handle_file } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
+
+        // State variables
+        let selectedMediaType = "Image";
+        let activeFile = null;
+        let clientInstance = null;
+
+        // Cache elements
+        const mediaTypeImageBtn = document.getElementById("media-type-image");
+        const mediaTypeVideoBtn = document.getElementById("media-type-video");
+        const videoFramesWrapper = document.getElementById("video-frames-wrapper");
+        const taskTypeSelect = document.getElementById("task-type");
+        const categoriesInput = document.getElementById("categories");
+        const clearSearchBtn = document.getElementById("clear-search-btn");
+        const inferenceModeSelect = document.getElementById("inference-mode");
+        const rawPromptPreview = document.getElementById("raw-prompt-preview");
+        
+        // Advanced Controls Elements
+        const tempSlider = document.getElementById("temp");
+        const tempVal = document.getElementById("temp-val");
+        const toppSlider = document.getElementById("topp");
+        const toppVal = document.getElementById("topp-val");
+        const topkSlider = document.getElementById("topk");
+        const topkVal = document.getElementById("topk-val");
+        const shortSizeInput = document.getElementById("short-size");
+        const maxFramesSlider = document.getElementById("max-frames");
+        const maxFramesVal = document.getElementById("frames-val");
+        
+        // Workspace Preview elements
+        const dropZone = document.getElementById("drop-zone");
+        const uploadPrompt = document.getElementById("upload-prompt");
+        const previewImage = document.getElementById("preview-image");
+        const previewVideo = document.getElementById("preview-video");
+        const fileInput = document.getElementById("media-file-input");
+        const workspaceStatus = document.getElementById("workspace-status");
+        
+        // Output result elements
+        const outputEmpty = document.getElementById("output-empty");
+        const outputImage = document.getElementById("output-image");
+        const outputVideo = document.getElementById("output-video");
+        
+        // Overlay and run button
+        const runBtn = document.getElementById("run-btn");
+        const btnText = document.getElementById("btn-text");
+        const btnIcon = document.getElementById("btn-icon");
+        const processingOverlay = document.getElementById("processing-overlay");
+        const processingStatus = document.getElementById("processing-status");
+
+        // Logging & Trace elements
+        const metaStatus = document.getElementById("meta-status");
+        const metaTokens = document.getElementById("meta-tokens");
+        const metaBoxes = document.getElementById("meta-boxes");
+        const metaTps = document.getElementById("meta-tps");
+        const metaBps = document.getElementById("meta-bps");
+        const metaTime = document.getElementById("meta-time");
+        const detectionTagsWrapper = document.getElementById("detection-tags-wrapper");
+        const detectionCountBadge = document.getElementById("detection-count-badge");
+        const richTraceLog = document.getElementById("rich-trace-log");
+
+        const TRACE_PLACEHOLDER_HTML = `
+            <div class="rounded-xl border border-dashed border-white/10 bg-black/30 p-6 text-center text-[10px] text-slate-500 leading-relaxed">
+                <p class="text-slate-400 font-semibold mb-1">Decoding Trace</p>
+                <p>Run inference to watch model tokens pop in here — ref labels, box coords, and stats shown in full without scrolling sideways.</p>
+            </div>`;
+
+        function setTracePlaceholder() {
+            richTraceLog.innerHTML = TRACE_PLACEHOLDER_HTML;
+        }
+
+        function setTraceProcessing() {
+            richTraceLog.innerHTML = '<p class="text-slate-400 animate-pulse p-4 text-center">Building decoding trace...</p>';
+        }
+
+        function setTraceHtml(html) {
+            richTraceLog.innerHTML = html || TRACE_PLACEHOLDER_HTML;
+        }
+
+        // Connect client
+        async function getClient() {
+            if (!clientInstance) {
+                try {
+                    clientInstance = await client(window.location.origin);
+                } catch (e) {
+                    console.error("Gradio Server connection failed:", e);
+                    alert("Could not connect to Gradio backend. Ensure the server is active.");
+                }
+            }
+            return clientInstance;
+        }
+
+        // Live values updater
+        function setupLiveUpdaters() {
+            tempSlider.addEventListener("input", (e) => tempVal.textContent = e.target.value);
+            toppSlider.addEventListener("input", (e) => toppVal.textContent = e.target.value);
+            topkSlider.addEventListener("input", (e) => topkVal.textContent = e.target.value);
+            maxFramesSlider.addEventListener("input", (e) => maxFramesVal.textContent = e.target.value);
+
+            // Clear search categories button
+            clearSearchBtn.addEventListener("click", () => {
+                categoriesInput.value = "";
+                categoriesInput.focus();
+                triggerPromptUpdate();
+            });
+
+            // Trigger prompt generation updates
+            const triggerPromptUpdate = () => {
+                const task = taskTypeSelect.value;
+                const cat = categoriesInput.value;
+                rawPromptPreview.textContent = generateRawPromptText(task, cat);
+            };
+            taskTypeSelect.addEventListener("change", () => {
+                // OCR defaults to slow (standard AR decoding) for best text accuracy
+                if (taskTypeSelect.value === "OCR") {
+                    inferenceModeSelect.value = "slow";
+                }
+                triggerPromptUpdate();
+            });
+            categoriesInput.addEventListener("input", triggerPromptUpdate);
+            
+            // Run prompt builder initially
+            triggerPromptUpdate();
+        }
+
+        // Prompt builder mirroring python logic
+        function generateRawPromptText(taskType, category) {
+            if (!category) category = "objects";
+            const cats = category.split(",")
+                                 .map(c => c.trim())
+                                 .filter(c => c.length > 0)
+                                 .join("</c>");
+            
+            switch (taskType) {
+                case "Detection": return `Locate all the instances that matches the following description: ${cats}.`;
+                case "Grounding": return `Locate all the instances that match the following description: ${cats}.`;
+                case "OCR": return "Detect all the text in box format.";
+                case "GUI": return `Locate the region that matches the following description: ${cats}.`;
+                case "Pointing": return `Point to: ${cats}.`;
+                default: return `Locate all the instances that matches the following description: ${cats}.`;
+            }
+        }
+
+        function formatDetectionCoords(det) {
+            const coords = det.coords || [];
+            if (!coords.length) return "";
+            const rounded = coords.map(c => Number.isFinite(c) ? Math.round(c) : c);
+            return rounded.join(", ");
+        }
+
+        function renderDetectionTags(detections) {
+            detectionTagsWrapper.innerHTML = "";
+            detectionCountBadge.textContent = "0";
+            detectionCountBadge.classList.remove("det-count-pop");
+
+            if (!detections.length) {
+                detectionTagsWrapper.innerHTML = '<p class="text-slate-500">No objects matched the given categories.</p>';
+                return;
+            }
+
+            // Animate count badge after tags finish popping in
+            const countDelay = detections.length * 80 + 120;
+            setTimeout(() => {
+                detectionCountBadge.textContent = detections.length;
+                detectionCountBadge.classList.add("det-count-pop");
+            }, countDelay);
+
+            detections.forEach((det, idx) => {
+                setTimeout(() => {
+                    const card = document.createElement("div");
+                    card.className = "det-tag-pop flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg bg-nvidia-brand/8 border border-nvidia-brand/20 hover:border-nvidia-brand/40 transition-colors";
+                    card.style.animationDelay = "0s";
+
+                    const labelWrap = document.createElement("div");
+                    labelWrap.className = "flex items-center gap-1.5 min-w-0";
+
+                    const typeBadge = document.createElement("span");
+                    typeBadge.className = "shrink-0 px-1 py-0.5 rounded text-[7px] font-bold uppercase tracking-wider bg-black/40 text-nvidia-brand border border-nvidia-brand/25";
+                    typeBadge.textContent = det.type || "box";
+
+                    const label = document.createElement("span");
+                    label.className = "font-bold uppercase tracking-wider text-[9px] text-nvidia-brand truncate";
+                    label.textContent = det.frame ? `[F${det.frame}] ${det.label}` : (det.label || "object");
+
+                    labelWrap.appendChild(typeBadge);
+                    labelWrap.appendChild(label);
+
+                    const coords = document.createElement("span");
+                    coords.className = "shrink-0 font-mono text-[8px] text-slate-500";
+                    const coordStr = formatDetectionCoords(det);
+                    coords.textContent = coordStr ? `[${coordStr}]` : "";
+
+                    card.appendChild(labelWrap);
+                    card.appendChild(coords);
+                    detectionTagsWrapper.appendChild(card);
+                    detectionTagsWrapper.scrollTop = detectionTagsWrapper.scrollHeight;
+                }, idx * 80);
+            });
+        }
+
+        function resetDetectionTagsPlaceholder() {
+            detectionTagsWrapper.innerHTML = `
+                <div id="detection-empty-hint" class="space-y-1.5 leading-relaxed">
+                    <p>Run inference to populate detected targets here — each result will pop in one by one.</p>
+                    <p class="text-[9px] text-slate-600">Adjustable: Task Type · Categories · Inference Mode · Resize Cap · Temperature · Top P/K · Max Video Frames</p>
+                </div>`;
+            detectionCountBadge.textContent = "0";
+            detectionCountBadge.classList.remove("det-count-pop");
+        }
+
+        // Switch workspace input styles without clearing
+        function setMediaType(type) {
+            selectedMediaType = type;
+            if (type === "Image") {
+                mediaTypeImageBtn.className = "py-1.5 rounded-lg font-semibold text-[10px] transition-all bg-nvidia-brand text-black font-outfit font-black shadow shadow-nvidia-brand/10";
+                mediaTypeVideoBtn.className = "py-1.5 rounded-lg font-semibold text-[10px] text-slate-400 hover:text-slate-200 transition-all";
+                videoFramesWrapper.classList.add("hidden");
+                videoFramesWrapper.classList.add("opacity-50");
+                videoFramesWrapper.classList.add("pointer-events-none");
+                maxFramesSlider.disabled = true;
+                fileInput.accept = "image/*";
+                workspaceStatus.textContent = activeFile ? "Image Loaded" : "No Media Loaded";
+            } else {
+                mediaTypeVideoBtn.className = "py-1.5 rounded-lg font-semibold text-[10px] transition-all bg-nvidia-brand text-black font-outfit font-black shadow shadow-nvidia-brand/10";
+                mediaTypeImageBtn.className = "py-1.5 rounded-lg font-semibold text-[10px] text-slate-400 hover:text-slate-200 transition-all";
+                videoFramesWrapper.classList.remove("hidden");
+                videoFramesWrapper.classList.remove("opacity-50");
+                videoFramesWrapper.classList.remove("pointer-events-none");
+                maxFramesSlider.disabled = false;
+                fileInput.accept = "video/*";
+                workspaceStatus.textContent = activeFile ? "Video Loaded" : "No Media Loaded";
+            }
+        }
+
+        // Reset elements
+        function clearWorkspace() {
+            activeFile = null;
+            previewImage.src = "";
+            previewImage.classList.add("hidden");
+            previewVideo.src = "";
+            previewVideo.classList.add("hidden");
+            uploadPrompt.classList.remove("hidden");
+            if (outputEmpty) outputEmpty.classList.remove("hidden");
+            outputImage.src = "";
+            outputImage.classList.add("hidden");
+            outputVideo.src = "";
+            outputVideo.classList.add("hidden");
+            workspaceStatus.textContent = "Workspace Cleared";
+            resetDetectionTagsPlaceholder();
+        }
+
+        // Drag and drop utilities
+        function setupDragDrop() {
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropZone.addEventListener(eventName, (e) => {
+                    e.preventDefault();
+                    dropZone.classList.add('drop-zone-active');
+                }, false);
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, (e) => {
+                    e.preventDefault();
+                    dropZone.classList.remove('drop-zone-active');
+                }, false);
+            });
+
+            dropZone.addEventListener('drop', (e) => {
+                const dt = e.dataTransfer;
+                const file = dt.files[0];
+                if (file) handleFileImport(file);
+            });
+
+            fileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) handleFileImport(file);
+            });
+        }
+
+        // Display imported media
+        function handleFileImport(file) {
+            uploadPrompt.classList.add("hidden");
+
+            if (file.type.startsWith("image/")) {
+                setMediaType("Image");
+                activeFile = file;
+                
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    previewImage.src = e.target.result;
+                    previewImage.classList.remove("hidden");
+                    previewVideo.classList.add("hidden");
+                };
+                reader.readAsDataURL(file);
+                workspaceStatus.textContent = `Image Loaded: ${file.name}`;
+            } else if (file.type.startsWith("video/")) {
+                setMediaType("Video");
+                activeFile = file;
+
+                previewVideo.src = URL.createObjectURL(file);
+                previewVideo.classList.remove("hidden");
+                previewImage.classList.add("hidden");
+                workspaceStatus.textContent = `Video Loaded: ${file.name}`;
+            }
+        }
+
+        // Initialize preloaded examples click actions
+        // Utility to fetch preloaded example assets and convert to File
+        async function loadExampleFromAsset(url, filename) {
+            try {
+                const response = await fetch(url);
+                const blob = await response.blob();
+                return new File([blob], filename, { type: blob.type });
+            } catch (err) {
+                console.error("Failed to load example asset:", err);
+                return null;
+            }
+        }
+
+        // Initialize preloaded examples click actions
+        function setupExamples() {
+            document.querySelectorAll(".example-card").forEach(card => {
+                card.addEventListener("click", async () => {
+                    const type = card.getAttribute("data-type");
+                    const name = card.getAttribute("data-name");
+                    const category = card.getAttribute("data-category");
+                    const task = card.getAttribute("data-task");
+                    const mode = card.getAttribute("data-mode");
+                    const assetPath = card.getAttribute("data-asset"); // e.g. "assets/book.jpg"
+
+                    clearWorkspace();
+                    workspaceStatus.textContent = `Loading ${name} example...`;
+
+                    // Set parameters
+                    taskTypeSelect.value = task;
+                    categoriesInput.value = category;
+                    inferenceModeSelect.value = mode;
+                    
+                    // Trigger live prompt update
+                    taskTypeSelect.dispatchEvent(new Event("change"));
+
+                    // Setup Media type
+                    setMediaType(type);
+
+                    // Fetch asset file with robust absolute URL resolution (works in iframe)
+                    const ext = type === "Image" ? "jpg" : "mp4";
+                    const resolvedAssetUrl = new URL(assetPath, window.location.href).href;
+                    console.log("Fetching example from:", resolvedAssetUrl);
+                    const file = await loadExampleFromAsset(resolvedAssetUrl, `${name.toLowerCase()}.${ext}`);
+                    if (file) {
+                        activeFile = file;
+                        uploadPrompt.classList.add("hidden");
+                        if (type === "Image") {
+                            previewImage.src = URL.createObjectURL(file);
+                            previewImage.classList.remove("hidden");
+                            previewVideo.classList.add("hidden");
+                            workspaceStatus.textContent = `Example Image Loaded: ${name}`;
+                        } else {
+                            previewVideo.src = URL.createObjectURL(file);
+                            previewVideo.classList.remove("hidden");
+                            previewImage.classList.add("hidden");
+                            workspaceStatus.textContent = `Example Video Loaded: ${name}`;
+                        }
+                    } else {
+                        workspaceStatus.textContent = `Failed to load ${name} example`;
+                    }
+                });
+            });
+        }
+
+        // Execution logic
+        async function executeInference() {
+            if (!activeFile) {
+                alert("Please upload a media file (Image or Video) or select an example first.");
+                return;
+            }
+
+            // Set loading state
+            runBtn.disabled = true;
+            btnText.textContent = "⏳ Queueing Request...";
+            btnIcon.textContent = "🔒";
+            processingOverlay.classList.remove("hidden");
+            processingStatus.textContent = "Waiting for Gradio queue...";
+            
+            // Clean outputs
+            if (outputEmpty) outputEmpty.classList.add("hidden");
+            outputImage.classList.add("hidden");
+            outputVideo.classList.add("hidden");
+            setTraceProcessing();
+            metaStatus.textContent = "Processing...";
+            metaStatus.className = "text-yellow-500 font-semibold";
+            detectionTagsWrapper.innerHTML = '<p class="text-slate-400 animate-pulse">Processing objects in backend...</p>';
+            detectionCountBadge.textContent = "0";
+            detectionCountBadge.classList.remove("det-count-pop");
+
+            try {
+                const clientInstance = await getClient();
+                if (!clientInstance) {
+                    throw new Error("Unable to create Gradio Client instance.");
+                }
+
+                // Handle file parameter wrapping using Gradio client handle_file
+                const wrappedFile = activeFile ? handle_file(activeFile) : null;
+                const imageFile = (selectedMediaType === "Image") ? wrappedFile : null;
+                const videoFile = (selectedMediaType === "Video") ? wrappedFile : null;
+                
+                // Collect configuration values
+                const taskType = taskTypeSelect.value;
+                const category = categoriesInput.value;
+                const modelMode = inferenceModeSelect.value;
+                const temp = parseFloat(tempSlider.value);
+                const topp = parseFloat(toppSlider.value);
+                const topk = parseInt(topkSlider.value);
+                const shortSize = shortSizeInput.value ? parseInt(shortSizeInput.value) : null;
+                const maxVideoFrames = parseInt(maxFramesSlider.value);
+
+                processingStatus.textContent = "Running Vision Model (duration-locked)...";
+
+                // Execute predictions using named parameters object matching app.py signature
+                const result = await clientInstance.predict("/run_inference", {
+                    input_type: selectedMediaType,
+                    image_file: imageFile,
+                    video_file: videoFile,
+                    task_type: taskType,
+                    category: category,
+                    model_mode: modelMode,
+                    temp: temp,
+                    top_p: topp,
+                    top_k: topk,
+                    short_size: shortSize,
+                    question_override: null,
+                    max_video_frames: maxVideoFrames
+                });
+
+                console.log("Inference complete. API outputs:", result);
+
+                // Unpack result values
+                const [outImageObj, outVideoObj, meta] = result.data;
+
+                if (!meta.success) {
+                    throw new Error(meta.error || "Backend returned processing failure.");
+                }
+
+                // Process image result
+                if (selectedMediaType === "Image" && outImageObj) {
+                    outputImage.src = outImageObj.url;
+                    outputImage.classList.remove("hidden");
+                    outputVideo.classList.add("hidden");
+                } 
+                // Process video result
+                else if (selectedMediaType === "Video" && outVideoObj) {
+                    outputVideo.src = outVideoObj.url;
+                    outputVideo.classList.remove("hidden");
+                    outputImage.classList.add("hidden");
+                }
+
+                // Render metrics logs
+                metaStatus.textContent = "Success";
+                metaStatus.className = "text-emerald-500 font-semibold";
+                
+                const stats = meta.stats || {};
+                metaTokens.textContent = stats.num_tokens || stats.total_frames || "-";
+                metaBoxes.textContent = stats.num_boxes || stats.processed_frames || "-";
+                metaTps.textContent = stats.tps || "-";
+                metaBps.textContent = stats.bps || "-";
+                metaTime.textContent = stats.total_time_seconds ? `${stats.total_time_seconds}s` : "Optimal";
+
+                // Render detection tags with staggered pop-in animation
+                renderDetectionTags(meta.detections || []);
+
+                // Render decoding trace (token-by-token pop animation from previous version)
+                setTraceHtml(meta.html);
+
+            } catch (err) {
+                console.error("Execution failed:", err);
+                metaStatus.textContent = "Error";
+                metaStatus.className = "text-red-500 font-semibold";
+                detectionTagsWrapper.innerHTML = `<span class="text-red-400">Failed: ${err.message}</span>`;
+                setTracePlaceholder();
+                alert(`Inference failed: ${err.message}`);
+                if (outputEmpty) outputEmpty.classList.remove("hidden");
+            } finally {
+                // Restore UI state
+                runBtn.disabled = false;
+                btnText.textContent = "Run Inference";
+                btnIcon.textContent = "🧠";
+                processingOverlay.classList.add("hidden");
+            }
+        }
+
+        // Add event listeners on load
+        document.addEventListener("DOMContentLoaded", () => {
+            mediaTypeImageBtn.addEventListener("click", () => {
+                if (selectedMediaType !== "Image") {
+                    setMediaType("Image");
+                    clearWorkspace();
+                }
+            });
+            mediaTypeVideoBtn.addEventListener("click", () => {
+                if (selectedMediaType !== "Video") {
+                    setMediaType("Video");
+                    clearWorkspace();
+                }
+            });
+            runBtn.addEventListener("click", executeInference);
+
+            // Bind enter key press in Categories float bar input
+            categoriesInput.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    executeInference();
+                }
+            });
+
+            setupLiveUpdaters();
+            setupDragDrop();
+            setupExamples();
+        });
+    </script>
+</body>
+</html>

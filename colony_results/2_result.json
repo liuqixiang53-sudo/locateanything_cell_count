@@ -1,0 +1,7 @@
+{
+  "image_path": "image/2.png",
+  "count": 0,
+  "boxes": [],
+  "answer": "<ref>red colony outline</ref><box><0><0><1000><1000></box><|im_end|>",
+  "stats": "\nStatistic Info, num_tokens=12; generate_time(s)=1.0206; tps=11.7582; forward_step=3; num_boxes=1; bps=0.9799; prefill_time=0.9024; switch_to_ar=0\n"
+}

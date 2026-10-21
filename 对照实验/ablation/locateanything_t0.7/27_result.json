@@ -1,0 +1,15 @@
+{
+  "image": "27.jpg",
+  "model": "LocateAnything-3B (T=0.7)",
+  "count": 1,
+  "raw_count": 1,
+  "points": [
+    {
+      "x": 678.64,
+      "y": 512.512
+    }
+  ],
+  "raw_response": "<ref>cell</ref><box><0><1><998><1000></box><ref>These appear as small circular, oval, or semi-circular shapes. When cells are crowded or touching, they may be deformed, squeezed into\nellipses or half-circles. Even if cells are touching or overlapping, each cell must be enclosed in a SEPARATE bounding box</ref> Do NOT group multiple cells into one large box</ref><box>None</box><ref>Each bounding box should tightly enclose a single cell</ref><box>None</box><|im_end|>",
+  "elapsed": 3.277235507965088,
+  "has_coordinates": true
+}

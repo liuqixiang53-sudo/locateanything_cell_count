@@ -36,7 +36,7 @@ import uvicorn
 
 # ---- 添加依赖路径 ----
 # __file__ is in colony_cell_gui_fastapi/backend/main.py
-# We need PROJECT_ROOT to be /home/qixiangliu/pycode/locateanthing_colony_count
+# We need PROJECT_ROOT to be /data/qixiangliu/pycode/locateanthing_colony_count
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "Eagle", "Embodied"))
 sys.path.insert(0, PROJECT_ROOT)
@@ -435,6 +435,93 @@ async def cell_remove_point(
     except Exception as e:
         traceback.print_exc()
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+# ============================================================
+# 对照实验 API
+# ============================================================
+
+import subprocess as _subprocess
+
+
+@app.post("/api/experiment/run")
+async def experiment_run():
+    """运行对照实验（LocateAnything + Ollama 模型）"""
+    try:
+        runner_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "experiment_runner.py"
+        )
+        proc = _subprocess.Popen(
+            [sys.executable, runner_path],
+            stdout=_subprocess.PIPE,
+            stderr=_subprocess.STDOUT,
+            text=True,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+
+        output_lines = []
+        for line in proc.stdout:
+            output_lines.append(line.rstrip())
+
+        proc.wait()
+
+        return JSONResponse({
+            "success": proc.returncode == 0,
+            "output": "\n".join(output_lines),
+            "returncode": proc.returncode,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/experiment/status")
+async def experiment_status():
+    """查询各模型结果完成情况"""
+    results_base = os.path.join(PROJECT_ROOT, "对照实验", "results")
+    gt_dir = os.path.join(PROJECT_ROOT, "对照实验", "ground_truth")
+
+    status = {}
+    total_images = 20
+
+    if os.path.exists(gt_dir):
+        gt_files = [f for f in os.listdir(gt_dir) if f.endswith("_gt.json")]
+        if gt_files:
+            total_images = len(gt_files)
+            status["ground_truth"] = f"{len(gt_files)} / {total_images}"
+
+    if os.path.exists(results_base):
+        for model_dir in sorted(os.listdir(results_base)):
+            full = os.path.join(results_base, model_dir)
+            if os.path.isdir(full):
+                result_files = [f for f in os.listdir(full) if f.endswith("_result.json")]
+                status[model_dir] = f"{len(result_files)} / {total_images}"
+
+    return JSONResponse({"status": status, "total_images": total_images})
+
+
+@app.get("/api/experiment/results")
+async def experiment_results():
+    """获取评估结果"""
+    eval_path = os.path.join(PROJECT_ROOT, "对照实验", "evaluation.json")
+    if not os.path.exists(eval_path):
+        return JSONResponse({"error": "评估结果尚未生成，请先运行 evaluation.py"}, status_code=404)
+
+    with open(eval_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return JSONResponse(data)
+
+
+@app.get("/api/experiment/report")
+async def experiment_report():
+    """获取 Markdown 报告"""
+    report_path = os.path.join(PROJECT_ROOT, "对照实验", "report.md")
+    if not os.path.exists(report_path):
+        return JSONResponse({"error": "报告尚未生成"}, status_code=404)
+
+    with open(report_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    return JSONResponse({"content": content})
 
 
 # ============================================================

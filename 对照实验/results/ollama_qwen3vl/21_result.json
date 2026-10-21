@@ -1,0 +1,10 @@
+{
+  "image": "21.jpg",
+  "model": "Qwen3-VL:8b",
+  "count": 98,
+  "raw_count": 98,
+  "points": [],
+  "raw_response": "98",
+  "elapsed": 411.97461104393005,
+  "has_coordinates": false
+}

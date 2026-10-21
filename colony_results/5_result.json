@@ -1,0 +1,7 @@
+{
+  "image_path": "./image/5.png",
+  "count": 0,
+  "boxes": [],
+  "answer": "",
+  "stats": "{'ollama_inference_time': 120.10929155349731, 'model': 'qwen3.5:9b'}"
+}
